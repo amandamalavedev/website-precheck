@@ -5,15 +5,21 @@
 // single image usually is), so this is worth checking directly: find every local <video>/<source>
 // the page references, HEAD each one for its real size, and flag the ones worth compressing.
 import { pathToFileURL } from "node:url";
-import { assertSafeUrl, flag } from "./safe.mjs";
+import { assertSafeUrl, safeFetch, flag } from "./safe.mjs";
 
 const VIDEO_EXT = /\.(mp4|webm|mov|m4v)(\?.*)?$/i;
+// See the matching comment in privacy.mjs: the scanned page is untrusted content, and an unbounded
+// regex scan over an attacker-sized response is a cheap resource-exhaustion lever even without
+// catastrophic backtracking. Bound what we scan.
+const MAX_SCAN_CHARS = 2_000_000;
 
 export async function checkVideoAssets(rawUrl, { allowPrivate = false, thresholdKiB = 2000 } = {}) {
   const url = await assertSafeUrl(rawUrl, { allowPrivate });
-  const res = await fetch(url, { headers: { "User-Agent": "website-precheck/1.0 (+video-weight-check)" } });
-  const html = await res.text();
-  const base = new URL(url);
+  // safeFetch re-validates every redirect hop on both the page fetch and each per-video HEAD
+  // request — a bare fetch() follows redirects by default, which is a straightforward SSRF bypass.
+  const { res, finalUrl } = await safeFetch(url, { allowPrivate, init: { headers: { "User-Agent": "website-precheck/1.0 (+video-weight-check)" } } });
+  const html = (await res.text()).slice(0, MAX_SCAN_CHARS);
+  const base = new URL(finalUrl);
   const srcs = new Set();
   for (const m of html.matchAll(/<(?:video|source)[^>]+src=["']([^"']+)["']/gi)) if (VIDEO_EXT.test(m[1])) srcs.add(m[1]);
 
@@ -22,10 +28,10 @@ export async function checkVideoAssets(rawUrl, { allowPrivate = false, threshold
     let abs;
     try { abs = await assertSafeUrl(new URL(src, base).href, { allowPrivate }); } catch { continue; } // skip anything off-origin/private — not this site's asset to flag
     try {
-      const head = await fetch(abs, { method: "HEAD", headers: { "User-Agent": "website-precheck/1.0 (+video-weight-check)" } });
+      const { res: head, finalUrl: headUrl } = await safeFetch(abs, { allowPrivate, init: { method: "HEAD", headers: { "User-Agent": "website-precheck/1.0 (+video-weight-check)" } } });
       const bytes = Number(head.headers.get("content-length") || 0);
-      videos.push({ url: abs, bytes });
-    } catch { /* unreachable — skip rather than fail the whole report */ }
+      videos.push({ url: headUrl, bytes });
+    } catch { /* unreachable, or redirected somewhere unsafe — skip rather than fail the whole report */ }
   }
   return { url, thresholdKiB, videos, heavy: videos.filter((v) => v.bytes / 1024 > thresholdKiB) };
 }

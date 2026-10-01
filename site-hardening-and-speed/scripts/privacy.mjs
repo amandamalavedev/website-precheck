@@ -7,7 +7,16 @@
 // known tracker with no privacy policy link is a flagged finding, to avoid false positives on
 // ordinary infrastructure.
 import { pathToFileURL } from "node:url";
-import { assertSafeUrl, flag } from "./safe.mjs";
+import { assertSafeUrl, safeFetch, flag } from "./safe.mjs";
+
+// The page being scanned is untrusted content (that's the whole point of this check) — an
+// attacker-controlled response could serve megabytes of garbage specifically to make the regexes
+// below expensive to run (a huge single tag with no ">", a multi-megabyte attribute value with no
+// closing quote). Neither regex has nested unbounded quantifiers (not classic catastrophic/
+// exponential ReDoS), but both are still O(n^2)-ish on pathological input, which is enough to stall
+// on a large enough page. Cap what we scan rather than trust pattern analysis alone — no real
+// privacy policy link or tracker script needs anything close to this much HTML to appear in.
+const MAX_SCAN_CHARS = 2_000_000;
 
 const KNOWN_TRACKERS = {
   "google-analytics.com": "Google Analytics",
@@ -37,9 +46,11 @@ const KNOWN_TRACKERS = {
 
 export async function checkPrivacy(rawUrl, { allowPrivate = false } = {}) {
   const url = await assertSafeUrl(rawUrl, { allowPrivate });
-  const res = await fetch(url, { headers: { "User-Agent": "website-precheck/1.0 (+privacy-check)" } });
-  const html = await res.text();
-  const base = new URL(url);
+  // safeFetch re-validates every redirect hop — a bare fetch() follows redirects by default and
+  // would happily land on an internal address a redirect pointed it to (SSRF bypass).
+  const { res, finalUrl } = await safeFetch(url, { allowPrivate, init: { headers: { "User-Agent": "website-precheck/1.0 (+privacy-check)" } } });
+  const html = (await res.text()).slice(0, MAX_SCAN_CHARS);
+  const base = new URL(finalUrl);
 
   const origins = new Set();
   for (const m of html.matchAll(/<(?:script|iframe)[^>]+src=["']([^"']+)["']/gi)) {

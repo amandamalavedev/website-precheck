@@ -65,6 +65,30 @@ export async function assertSafeUrl(input, { allowPrivate = false } = {}) {
   return u.href;
 }
 
+// Fetch with manual redirect handling, re-validating the TARGET of every hop. fetch()'s default
+// redirect mode ("follow") transparently follows a redirect without re-checking the destination —
+// so a site that passes assertSafeUrl and then issues a 302 to 169.254.169.254 (or localhost, or
+// any internal address) sails straight through a bare fetch(). Confirmed as a real bypass in this
+// codebase (2026-10-01): cookies.mjs, privacy.mjs, and media.mjs all called fetch() directly and
+// were vulnerable; only headers.mjs had the manual-redirect loop. Every check that fetches a URL
+// goes through this now, not a bare fetch() — one chokepoint instead of four copies to keep in sync.
+export async function safeFetch(rawUrl, { allowPrivate = false, init = {}, maxRedirects = 5 } = {}) {
+  let current = await assertSafeUrl(rawUrl, { allowPrivate });
+  let res, finalUrl = current;
+  for (let hop = 0; ; hop++) {
+    res = await fetch(current, { ...init, redirect: "manual" });
+    finalUrl = current;
+    const loc = res.headers.get("location");
+    if ([301, 302, 303, 307, 308].includes(res.status) && loc && hop < maxRedirects) {
+      const next = new URL(loc, current).href;
+      current = await assertSafeUrl(next, { allowPrivate }); // throws if the redirect target is private
+      continue;
+    }
+    break;
+  }
+  return { res, finalUrl };
+}
+
 // Chrome's sandbox stays ON by default — these tools load untrusted pages. Only disable it on an
 // explicit opt-in (WG_NO_SANDBOX=1, or a --no-sandbox flag), e.g. a CI container running as root.
 export function sandboxOptIn(args = []) {

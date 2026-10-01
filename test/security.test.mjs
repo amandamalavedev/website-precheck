@@ -8,7 +8,10 @@ import { mkdtempSync, rmSync, mkdirSync, symlinkSync, linkSync, writeFileSync, r
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertSafeUrl, isPrivateIp, sandboxOptIn, assertDirInside, writeFileContained } from "../lib/safe.mjs";
+import { createServer } from "node:http";
+import { connect } from "node:net";
+import { assertSafeUrl, safeFetch, isPrivateIp, sandboxOptIn, assertDirInside, writeFileContained } from "../lib/safe.mjs";
+import { createStaticServer } from "../lib/serve-with-headers.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WG = join(HERE, "..", "bin", "precheck.mjs");
@@ -129,4 +132,145 @@ test("F4 regression: a symlink/junction inside the base that points OUT is refus
     // Lexical checks are fooled because base/escape/... textually looks inside base; realpath isn't.
     assert.throws(() => assertDirInside(join(link, "sub"), base), /outside/i);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// ── F6: redirect targets are re-validated, not just the initial URL (safeFetch) ───────────────────
+// Found by Codex's adversarial review (2026-10-01): cookies.mjs/privacy.mjs/media.mjs called a bare
+// fetch() with its default redirect:"follow" — a site that passes assertSafeUrl and then issues a
+// 302 to a private/internal address sails straight through. safeFetch() is the fix: it follows
+// redirects by hand and re-validates every hop's target through assertSafeUrl. A private-IP redirect
+// target specifically needs DNS control to test hermetically, so this proves the mechanism that
+// would ALSO catch that case: assertSafeUrl's protocol/forbidden-character checks fire on every
+// redirect hop, not just the first request.
+function listen(server) {
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
+}
+test("F6 regression: safeFetch re-validates a redirect's Location target (bad scheme)", async () => {
+  const server = createServer((req, res) => {
+    if (req.url === "/go") { res.writeHead(302, { Location: "javascript:alert(1)" }); res.end(); }
+    else { res.writeHead(200); res.end("ok"); }
+  });
+  const port = await listen(server);
+  try {
+    await assert.rejects(
+      safeFetch(`http://127.0.0.1:${port}/go`, { allowPrivate: true }),
+      /http/i,
+      "a redirect to a non-http(s) scheme must be refused even though the initial hop was allowed"
+    );
+  } finally { server.close(); }
+});
+test("F6 regression: safeFetch re-validates a redirect's Location target (forbidden characters)", async () => {
+  // Note: "<" / ">" / "^" / backtick are auto-percent-encoded by the URL constructor itself before
+  // FORBIDDEN_URL_CHARS ever sees them — not a gap, just means they're the wrong payload to prove
+  // this with. "|" survives URL normalization verbatim, so it's the one that actually exercises the
+  // check (confirmed empirically, not assumed).
+  const server = createServer((req, res) => {
+    if (req.url === "/go") { res.writeHead(302, { Location: "http://example.com/a|b" }); res.end(); }
+    else { res.writeHead(200); res.end("ok"); }
+  });
+  const port = await listen(server);
+  try {
+    await assert.rejects(
+      safeFetch(`http://127.0.0.1:${port}/go`, { allowPrivate: true }),
+      /not allowed/i,
+      "a redirect target containing forbidden characters must be refused"
+    );
+  } finally { server.close(); }
+});
+test("F6 control: safeFetch follows a normal same-origin redirect and returns the final response", async () => {
+  const server = createServer((req, res) => {
+    if (req.url === "/go") { res.writeHead(302, { Location: "/landed" }); res.end(); }
+    else { res.writeHead(200); res.end("ok"); }
+  });
+  const port = await listen(server);
+  try {
+    const { res, finalUrl } = await safeFetch(`http://127.0.0.1:${port}/go`, { allowPrivate: true });
+    assert.equal(res.status, 200);
+    assert.match(finalUrl, /\/landed$/);
+  } finally { server.close(); }
+});
+
+// ── F7: the local static server (serve-with-headers.mjs) can't be escaped or crashed by a request ──
+// Found by Codex's adversarial review (2026-10-01): it served a file outside its root through a
+// directory junction (the old code only checked the URL text for ".." — a junction inside the root
+// that points out is reached by a perfectly normal-looking path), and a malformed percent-encoded
+// URL (decodeURIComponent throwing on e.g. "%zz") crashed the request handler uncaught.
+function rawRequest(port, rawPath) {
+  return new Promise((resolve, reject) => {
+    const sock = connect(port, "127.0.0.1", () => {
+      sock.write(`GET ${rawPath} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`);
+    });
+    let data = "";
+    sock.on("data", (d) => (data += d));
+    sock.on("end", () => resolve(data));
+    sock.on("error", reject);
+  });
+}
+test("F7 regression: a directory junction inside the served root cannot be used to escape it", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "wg-serve-"));
+  const outside = mkdtempSync(join(tmpdir(), "wg-outside-"));
+  writeFileSync(join(outside, "secret.txt"), "SHOULD NOT BE SERVED");
+  const link = join(root, "escape");
+  try { symlinkSync(outside, link, "junction"); }
+  catch { try { symlinkSync(outside, link, "dir"); } catch { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); return t.skip("cannot create symlink here"); } }
+  return (async () => {
+    const server = createStaticServer(root);
+    const port = await listen(server);
+    try {
+      const raw = await rawRequest(port, "/escape/secret.txt");
+      assert.doesNotMatch(raw, /SHOULD NOT BE SERVED/, "the junction target must not be served");
+      assert.match(raw, /403|404/, "should be refused, not served");
+    } finally {
+      server.close();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  })();
+});
+test("F7 regression: a malformed percent-encoded URL returns 400, not a crash", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wg-serve-"));
+  writeFileSync(join(root, "index.html"), "hi");
+  const server = createStaticServer(root);
+  const port = await listen(server);
+  try {
+    const raw = await rawRequest(port, "/%zz");       // invalid percent-encoding — decodeURIComponent throws
+    assert.match(raw, /400/, "should respond 400, proving the handler didn't crash on this request");
+    // server must still be alive for the next request
+    const raw2 = await rawRequest(port, "/index.html");
+    assert.match(raw2, /200/);
+  } finally { server.close(); rmSync(root, { recursive: true, force: true }); }
+});
+test("F7 control: a normal file under the root is served with its headers applied", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wg-serve-"));
+  writeFileSync(join(root, "_headers"), "/*\n  X-Test: yes\n");
+  writeFileSync(join(root, "index.html"), "hi");
+  const server = createStaticServer(root);
+  const port = await listen(server);
+  try {
+    const raw = await rawRequest(port, "/index.html");
+    assert.match(raw, /200/);
+    assert.match(raw, /X-Test: yes/i);
+  } finally { server.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+// ── F8: scanning untrusted page content can't be turned into a resource-exhaustion lever ──────────
+// Found by Codex's adversarial review (2026-10-01): privacy.mjs's and media.mjs's regex scans over
+// fetched HTML took over a second against pathological input. Neither regex has nested unbounded
+// quantifiers (not classic catastrophic backtracking), but both are still roughly O(n^2) on
+// adversarial input, which is enough to stall on an attacker-sized page. The fix caps how much HTML
+// is scanned; this proves the cap actually bounds the time regardless of pattern complexity.
+test("F8 regression: scanning a pathological multi-megabyte page stays fast", async () => {
+  // A single unclosed tag with no ">" forces [^>]+ to consume to the end before backtracking to look
+  // for "src=", repeated across the whole (capped) input — the worst case the cap is meant to bound.
+  const evil = "<script " + "a".repeat(5_000_000);
+  const server = createServer((req, res) => { res.writeHead(200, { "Content-Type": "text/html" }); res.end(evil); });
+  const port = await listen(server);
+  try {
+    const { checkPrivacy } = await import("../lib/privacy.mjs");
+    const start = Date.now();
+    const result = await checkPrivacy(`http://127.0.0.1:${port}/`, { allowPrivate: true });
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 3000, `checkPrivacy took ${elapsed}ms against pathological input — the scan cap isn't bounding it`);
+    assert.deepEqual(result.thirdParty, []);
+  } finally { server.close(); }
 });
