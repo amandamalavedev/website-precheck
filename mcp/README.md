@@ -9,6 +9,11 @@ Exposes the free Web Guardrails checks as tools any MCP-capable agent can call l
 
 Same engine as the CLI (`../lib`), wrapped over stdio with the MCP SDK.
 
+**Scope & limits:** these tools are for sites you own or are authorized to test. The SSRF guard
+refuses private/internal/metadata addresses by default (override per call with `allowPrivate`), but
+it is defense in depth, not a guarantee — read [../SECURITY.md](../SECURITY.md) for the residual risks
+(DNS rebinding, Lighthouse browser-driven redirects) before pointing these at agent-chosen URLs.
+
 ## Install
 
 The MCP server ships inside the one `web-guardrails` package (it shares the `lib/` engine), so a

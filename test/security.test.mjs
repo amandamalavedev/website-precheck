@@ -4,11 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, symlinkSync, linkSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertSafeUrl, isPrivateIp, sandboxOptIn, assertDirInside } from "../lib/safe.mjs";
+import { assertSafeUrl, isPrivateIp, sandboxOptIn, assertDirInside, writeFileContained } from "../lib/safe.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WG = join(HERE, "..", "bin", "wg.mjs");
@@ -92,6 +92,31 @@ test("F4 control: a subdirectory of the base is allowed", () => {
     const ok = assertDirInside(join(base, "public"), base);
     assert.ok(ok.startsWith(base));
   } finally { rmSync(base, { recursive: true, force: true }); }
+});
+test("F4 regression (file-level): a HARD-LINKED output file cannot be written through to escape", () => {
+  // The reviewer's exact bypass: an individual output file is a hard link to a file outside the dir.
+  const root = mkdtempSync(join(tmpdir(), "wg-"));
+  const site = join(root, "site"); mkdirSync(site);
+  const secret = join(root, "secret.txt"); writeFileSync(secret, "ORIGINAL");
+  const out = join(site, "out.txt");
+  linkSync(secret, out);                                   // hard link inside the site dir
+  try {
+    writeFileContained(site, out, "REPLACED");
+    assert.equal(readFileSync(secret, "utf8"), "ORIGINAL", "external hard-link target must be untouched");
+    assert.equal(readFileSync(out, "utf8"), "REPLACED", "the in-dir file is updated");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+test("F4 regression (file-level): a SYMLINKED output file is replaced, not written through", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "wg-"));
+  const site = join(root, "site"); mkdirSync(site);
+  const secret = join(root, "secret.txt"); writeFileSync(secret, "ORIGINAL");
+  const out = join(site, "out.txt");
+  try { symlinkSync(secret, out, "file"); } catch { return t.skip("cannot create symlink here"); }
+  try {
+    writeFileContained(site, out, "REPLACED");
+    assert.equal(readFileSync(secret, "utf8"), "ORIGINAL", "external symlink target must be untouched");
+    assert.equal(readFileSync(out, "utf8"), "REPLACED");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 test("F4 regression: a symlink/junction inside the base that points OUT is refused", (t) => {
   const root = mkdtempSync(join(tmpdir(), "wg-"));

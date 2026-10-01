@@ -34,9 +34,17 @@ npx web-guardrails a11y       https://example.com     # accessibility (WCAG 2.1 
 npx web-guardrails sitemap --dir ./build --base https://example.com   # sitemap.xml + robots.txt + llms.txt
 ```
 
-- `headers` and `sitemap` are pure Node — no browser, no deps.
+- `headers` and `sitemap` are pure Node — no browser, no external install.
 - `lighthouse` uses `npx lighthouse@12` under the hood (needs Chrome).
-- The security/SSRF guard needs `ipaddr.js` (`npm install ipaddr.js`); the npm package includes it automatically.
+- The IP/SSRF classifier is a vendored copy of [`ipaddr.js`](https://github.com/whitequark/ipaddr.js)
+  (MIT) bundled with the scripts — nothing extra to install.
+
+**These are tools for sites you own or are authorized to test.** They harden against an agent being
+tricked into a local-command or internal-network attack (no shell; private/metadata addresses
+refused in every canonical IPv4/IPv6 form; writes confined to the target directory), but that is
+defense in depth, not a guarantee — see [SECURITY.md](./SECURITY.md) for the threat model and the
+residual risks (DNS rebinding, Lighthouse browser-driven redirects) that it does **not** fully
+mitigate.
 - `a11y` needs Chrome + `puppeteer-core` (`npm install --no-save puppeteer-core`); it bypasses the
   page's CSP for the scan so it works even on well-hardened sites.
 

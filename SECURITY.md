@@ -1,9 +1,11 @@
 # Security model
 
 Web Guardrails runs website checks that may be driven by an AI agent acting on **untrusted input**
-(a URL from a web page, a README, a chat). The checks are built so that a tricked agent can't turn
-them into something dangerous on the user's machine or network. This file states what is protected
-and — just as important — what is not.
+(a URL from a web page, a README, a chat). The checks are hardened to **substantially raise the bar**
+against a tricked agent turning them into a local-command or internal-network attack — but this is
+defense in depth, not a guarantee. It is a tool for testing sites **you own or are authorized to
+test**; it is not safe to point at fully arbitrary, agent-chosen URLs without accepting the residual
+network risks below. This file states what is protected and — just as important — what is not.
 
 ## What is protected
 

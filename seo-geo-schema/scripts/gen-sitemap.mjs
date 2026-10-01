@@ -6,9 +6,9 @@
 //   add --out ./public-site  to write the files somewhere other than --dir
 // Does NOT overwrite an existing robots.txt or llms.txt (prints them so you can merge); always
 // writes sitemap.xml.
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { assertDirInside, flag } from "./safe.mjs";
+import { assertDirInside, flag, writeFileContained } from "./safe.mjs";
 
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf("--" + n); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
@@ -60,7 +60,7 @@ if (existsSync(sitemapPath) && !overwrite) {
   console.error(`sitemap.xml already exists at ${sitemapPath}. Re-run with --overwrite to replace it.`);
   process.exit(1);
 }
-writeFileSync(sitemapPath, sitemap);
+writeFileContained(outDir, sitemapPath, sitemap); // atomic + alias-safe: can't write through a hard/symlink out of outDir
 console.log(`Wrote ${sitemapPath} — ${urls.length} URL(s):`);
 for (const u of urls) console.log("  " + loc(u));
 
@@ -69,14 +69,14 @@ const robotsPath = join(outDir, "robots.txt");
 if (existsSync(robotsPath)) {
   console.log(`\nrobots.txt already exists — not overwriting. Make sure it contains:\n${robots}`);
 } else {
-  writeFileSync(robotsPath, robots);
+  writeFileContained(outDir, robotsPath, robots);
   console.log(`\nWrote ${robotsPath}`);
 }
 
 const llmsPath = join(outDir, "llms.txt");
 if (!existsSync(llmsPath)) {
   const llms = `# <Brand>\n\n> <One sentence: what this is and who it's for.>\n\n## Key facts\n- <what it does, where, for whom>\n\n## Pages\n${urls.map((u) => `- [${u === "/" ? "Home" : u}](${loc(u)}): <what's here>`).join("\n")}\n\n## Contact\n<email>\n`;
-  writeFileSync(llmsPath, llms);
+  writeFileContained(outDir, llmsPath, llms);
   console.log(`Wrote ${llmsPath} (a starter — fill in the <…> placeholders with real facts).`);
 } else {
   console.log(`\nllms.txt already exists — not overwriting.`);
