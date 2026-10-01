@@ -11,7 +11,7 @@ structured result and can act on it directly.
 
 ```
 node scripts/lighthouse.mjs https://example.com                 # 3 runs, mobile, simulated slow 4G
-node scripts/lighthouse.mjs http://localhost:3030/ --runs 1     # quick local check
+node scripts/lighthouse.mjs http://localhost:3030/ --runs 1 --allow-private  # quick local check
 node scripts/lighthouse.mjs https://example.com --form desktop
 ```
 

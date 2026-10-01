@@ -23,7 +23,7 @@ can't (automation never confirms a site is *fully* accessible — it confirms sp
 
 - **Automated:** `scripts/a11y-check.mjs <url>` drives headless Chrome, injects axe-core, and reports
   violations by severity with the offending elements and how to fix each. Run it against every key
-  page/state. (Lighthouse's accessibility category via the hardening skill's `lighthouse.mjs
+  page/state. (It refuses private/internal addresses by default as an SSRF guard — add `--allow-private` when testing a local dev site like `http://localhost:3000`.) (Lighthouse's accessibility category via the hardening skill's `lighthouse.mjs
   --categories accessibility` is a lighter second opinion.)
 - **Manual — the checks automation misses** (`references/wcag-checklist.md` has the full list):
   - **Keyboard only:** tab through the whole page — every control reachable, in a sensible order, with
