@@ -36,6 +36,7 @@ npx web-guardrails sitemap --dir ./build --base https://example.com   # sitemap.
 
 - `headers` and `sitemap` are pure Node — no browser, no deps.
 - `lighthouse` uses `npx lighthouse@12` under the hood (needs Chrome).
+- The security/SSRF guard needs `ipaddr.js` (`npm install ipaddr.js`); the npm package includes it automatically.
 - `a11y` needs Chrome + `puppeteer-core` (`npm install --no-save puppeteer-core`); it bypasses the
   page's CSP for the scan so it works even on well-hardened sites.
 

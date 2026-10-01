@@ -11,9 +11,11 @@ Same engine as the CLI (`../lib`), wrapped over stdio with the MCP SDK.
 
 ## Install
 
+The MCP server ships inside the one `web-guardrails` package (it shares the `lib/` engine), so a
+normal install of the package brings it and its dependencies:
+
 ```bash
-cd mcp
-npm install
+npm install            # from the repo root — installs the SDK, zod, ipaddr.js
 npm install puppeteer-core   # only if you want the accessibility tool
 ```
 

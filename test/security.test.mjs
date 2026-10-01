@@ -4,10 +4,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { assertSafeUrl, isPrivateIp, sandboxOptIn, assertDirInside } from "../lib/safe.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const WG = join(HERE, "..", "bin", "wg.mjs");
 
 // ── F1: command injection — input never reaches a shell ──────────────────────────────────────────
 test("F1 abuse: non-http(s) schemes and malformed URLs are refused before anything runs", async () => {
@@ -42,8 +46,25 @@ test("F2 control: a public IP is allowed; and localhost is allowed WITH --allow-
   await assert.doesNotReject(assertSafeUrl("http://localhost:3030/", { allowPrivate: true }));
 });
 test("F2 unit: isPrivateIp classifies ranges correctly", () => {
-  for (const ip of ["127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.0.1", "169.254.169.254", "::1", "fe80::1", "fc00::1"]) assert.equal(isPrivateIp(ip), true, ip);
+  for (const ip of ["127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.0.1", "169.254.169.254", "::1", "fe80::1", "fc00::1", "100.64.0.1", "0.0.0.0"]) assert.equal(isPrivateIp(ip), true, ip);
   for (const ip of ["8.8.8.8", "93.184.216.34", "172.32.0.1", "2606:4700:4700::1111"]) assert.equal(isPrivateIp(ip), false, ip);
+});
+test("F2 regression: canonical IPv6 forms and IPv4-mapped metadata are NOT a bypass", async () => {
+  // These slipped past the original hand-rolled check; ipaddr.js canonicalizes them.
+  for (const ip of ["0:0:0:0:0:0:0:1", "::ffff:169.254.169.254", "::ffff:a9fe:a9fe", "::ffff:127.0.0.1", "::"]) {
+    assert.equal(isPrivateIp(ip), true, `isPrivateIp should block ${ip}`);
+  }
+  for (const u of ["http://[::1]/", "http://[0:0:0:0:0:0:0:1]/", "http://[::ffff:169.254.169.254]/"]) {
+    await assert.rejects(assertSafeUrl(u), /private|local/i, `assertSafeUrl should refuse ${u}`);
+  }
+});
+test("F1 end-to-end: the CLI rejects an injection-shaped URL before spawning Lighthouse", () => {
+  // Malformed authority → new URL() throws at the validation gate, so the payload never reaches a
+  // subprocess. (Deterministic offline; a well-formed URL is separately proven inert as one argv.)
+  const r = spawnSync(process.execPath, [WG, "lighthouse", "http:// &echo WGPWNED", "--runs", "1"], { encoding: "utf8" });
+  assert.notEqual(r.status, 0, "should exit non-zero");
+  assert.match(r.stdout + r.stderr, /Refused|valid URL/i);
+  assert.doesNotMatch(r.stdout + r.stderr, /WGPWNED executed|^WGPWNED$/m); // never ran
 });
 
 // ── F3: Chrome sandbox stays on unless explicitly opted out ───────────────────────────────────────
@@ -71,4 +92,16 @@ test("F4 control: a subdirectory of the base is allowed", () => {
     const ok = assertDirInside(join(base, "public"), base);
     assert.ok(ok.startsWith(base));
   } finally { rmSync(base, { recursive: true, force: true }); }
+});
+test("F4 regression: a symlink/junction inside the base that points OUT is refused", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "wg-"));
+  const base = join(root, "site"); mkdirSync(base);
+  const outside = join(root, "outside"); mkdirSync(outside);
+  const link = join(base, "escape");
+  try { symlinkSync(outside, link, "junction"); }           // junction works without admin on Windows
+  catch { try { symlinkSync(outside, link, "dir"); } catch { return t.skip("cannot create symlink here"); } }
+  try {
+    // Lexical checks are fooled because base/escape/... textually looks inside base; realpath isn't.
+    assert.throws(() => assertDirInside(join(link, "sub"), base), /outside/i);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

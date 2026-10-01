@@ -12,9 +12,12 @@
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
-import { assertSafeUrl, sandboxOptIn, flag } from "./safe.mjs";
-// Resolve puppeteer-core from the PROJECT being tested (its node_modules), not this script's folder.
-const require = createRequire(pathToFileURL(join(process.cwd(), "resolve-from-here.js")));
+import { assertSafeUrl, sandboxOptIn, flag, hostIsPublic } from "./safe.mjs";
+// Resolve puppeteer-core reliably: first from THIS script's package (where an npm install of the
+// toolkit puts its optionalDependency), then from the project being tested (cwd).
+const requireHere = createRequire(import.meta.url);
+const requireCwd = createRequire(pathToFileURL(join(process.cwd(), "resolve-from-here.js")));
+const require = requireHere; // for node:fs etc.
 
 const args = process.argv.slice(2);
 const rawUrl = args.find((a) => /^https?:\/\//.test(a));
@@ -40,8 +43,8 @@ function findChrome() {
 }
 
 let puppeteer;
-try { puppeteer = require("puppeteer-core"); }
-catch { console.error("puppeteer-core not found. Run: npm install --no-save puppeteer-core"); process.exit(3); }
+for (const r of [requireHere, requireCwd]) { try { puppeteer = r("puppeteer-core"); break; } catch { /* try next */ } }
+if (!puppeteer) { console.error("puppeteer-core not found. Run: npm install puppeteer-core"); process.exit(3); }
 
 const AXE_CDN = "https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js";
 const SEV = { critical: 0, serious: 1, moderate: 2, minor: 3 };
@@ -57,6 +60,21 @@ const SEV = { critical: 0, serious: 1, moderate: 2, minor: 3 };
   // A well-hardened site has a strict CSP (script-src 'self') that would block injecting axe-core.
   // Bypass CSP for this testing session only — it affects this headless run, never the live site.
   await page.setBypassCSP(true);
+  // Block the browser from reaching private/internal hosts on ANY request — redirects and
+  // subresources included, not just the initial URL (F2). Skipped when --allow-private is set.
+  const allowPrivate = flag(args, "allow-private");
+  if (!allowPrivate) {
+    await page.setRequestInterception(true);
+    page.on("request", async (req) => {
+      const u = req.url();
+      if (!/^https?:/i.test(u)) { req.continue(); return; }   // data:/blob:/about: aren't network
+      try {
+        const host = new URL(u).hostname;
+        if (await hostIsPublic(host)) req.continue();
+        else req.abort("addressunreachable");
+      } catch { req.abort("failed"); }
+    });
+  }
   try {
     await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
   } catch (e) { console.error("Could not load " + url + ": " + e.message); await browser.close(); process.exit(3); }

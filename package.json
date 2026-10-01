@@ -5,16 +5,50 @@
   "type": "module",
   "bin": {
     "web-guardrails": "bin/wg.mjs",
-    "wg": "bin/wg.mjs"
+    "wg": "bin/wg.mjs",
+    "web-guardrails-mcp": "mcp/server.mjs"
   },
-  "files": ["bin/", "lib/", "README.md", "LICENSE"],
-  "engines": { "node": ">=18" },
+  "files": [
+    "bin/",
+    "lib/",
+    "mcp/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "ipaddr.js": "^2.5.0",
+    "zod": "^3.23.0"
+  },
   "optionalDependencies": {
     "puppeteer-core": "^23"
   },
-  "keywords": ["lighthouse", "accessibility", "a11y", "wcag", "axe", "security-headers", "seo", "sitemap", "website", "audit", "cli"],
+  "keywords": [
+    "lighthouse",
+    "accessibility",
+    "a11y",
+    "wcag",
+    "axe",
+    "security-headers",
+    "ssrf",
+    "seo",
+    "sitemap",
+    "website",
+    "audit",
+    "cli",
+    "mcp"
+  ],
   "license": "MIT",
   "author": "Pacific AI Labs",
   "homepage": "https://github.com/amandamalavedev/web-guardrails",
-  "repository": { "type": "git", "url": "https://github.com/amandamalavedev/web-guardrails.git" }
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/amandamalavedev/web-guardrails.git"
+  }
 }
