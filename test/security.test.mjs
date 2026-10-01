@@ -324,3 +324,40 @@ test("F9 control: no structured data on the page is reported honestly, not as an
     assert.equal(r.overallScore, null);
   } finally { server.close(); }
 });
+test("F9 regression: structurally odd but valid JSON-LD doesn't crash the check", async () => {
+  // @graph as an object (not an array), @graph as a string, and a bare null are all valid JSON but
+  // not the shape flattenJsonLd expected — each previously threw (items.filter is not a function /
+  // reading '@graph' of null) and aborted the entire SEO check for the page. Now absorbed, not thrown.
+  for (const body of [`{"@graph":{"@type":"Organization","name":"x"}}`, `{"@graph":"nope"}`, `null`]) {
+    const html = `<script type="application/ld+json">${body}</script>`;
+    const server = createServer((req, res) => { res.writeHead(200, { "Content-Type": "text/html" }); res.end(html); });
+    const port = await listen(server);
+    try {
+      const { checkSchema } = await import("../lib/schema.mjs");
+      const r = await checkSchema(`http://127.0.0.1:${port}/`, { allowPrivate: true }); // must not reject
+      assert.equal(r.malformed, 0);       // it parsed fine — it's just an odd shape, not broken JSON
+      assert.ok(Array.isArray(r.blocks)); // a usable result came back instead of a crash
+    } finally { server.close(); }
+  }
+});
+test("F9 regression: a valid block in an oversized response is still found, bounded by the read cap", async () => {
+  // The body is far larger than MAX_SCAN_CHARS. readTextCapped must stream-and-stop rather than buffer
+  // the whole thing via res.text() — the block is at the top, so it's captured well within the cap.
+  const block = `<script type="application/ld+json">{"@type":"Organization","name":"Acme","url":"https://acme.test","logo":"https://acme.test/l.png","sameAs":["https://x.com/a"]}</script>`;
+  const server = createServer((req, res) => {
+    res.on("error", () => {});            // the client cancels mid-stream once it hits the cap; ignore the reset
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.write(block);
+    res.end("x".repeat(6_000_000));       // 6MB of filler past the 2MB cap
+  });
+  const port = await listen(server);
+  try {
+    const { checkSchema } = await import("../lib/schema.mjs");
+    const start = Date.now();
+    const r = await checkSchema(`http://127.0.0.1:${port}/`, { allowPrivate: true });
+    const elapsed = Date.now() - start;
+    assert.equal(r.hasSchema, true);
+    assert.equal(r.blocks[0].score, 100);
+    assert.ok(elapsed < 3000, `took ${elapsed}ms on a 6MB body — the read cap isn't bounding the download`);
+  } finally { server.close(); }
+});

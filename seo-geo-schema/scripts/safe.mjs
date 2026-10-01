@@ -89,6 +89,30 @@ export async function safeFetch(rawUrl, { allowPrivate = false, init = {}, maxRe
   return { res, finalUrl };
 }
 
+// Read a response body with a hard byte budget, streaming so a hostile or just huge page can't
+// exhaust memory. res.text() buffers the ENTIRE body first — the per-check MAX_SCAN_CHARS slice only
+// bounds the regex scan, not the download — so this is the real cap. We stop reading once the budget
+// is reached (bounded overshoot of at most one network chunk) and cancel the stream. Multi-byte UTF-8
+// is decoded across chunk boundaries; the budget is in bytes, which is the quantity that bounds memory.
+export async function readTextCapped(res, maxBytes = 2_000_000) {
+  const reader = res.body && typeof res.body.getReader === "function" ? res.body.getReader() : null;
+  if (!reader) { const t = await res.text(); return t.slice(0, maxBytes); } // no stream → bounded fallback
+  const decoder = new TextDecoder("utf-8");
+  let out = "", used = 0;
+  try {
+    while (used < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const remain = maxBytes - used;
+      const chunk = value.byteLength > remain ? value.subarray(0, remain) : value;
+      out += decoder.decode(chunk, { stream: true });
+      used += chunk.byteLength;
+    }
+  } finally { try { await reader.cancel(); } catch { /* already closed */ } }
+  out += decoder.decode();
+  return out;
+}
+
 // Chrome's sandbox stays ON by default — these tools load untrusted pages. Only disable it on an
 // explicit opt-in (WG_NO_SANDBOX=1, or a --no-sandbox flag), e.g. a CI container running as root.
 export function sandboxOptIn(args = []) {

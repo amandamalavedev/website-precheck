@@ -5,7 +5,7 @@
 // single image usually is), so this is worth checking directly: find every local <video>/<source>
 // the page references, HEAD each one for its real size, and flag the ones worth compressing.
 import { pathToFileURL } from "node:url";
-import { assertSafeUrl, safeFetch, flag } from "./safe.mjs";
+import { assertSafeUrl, safeFetch, readTextCapped, flag } from "./safe.mjs";
 
 const VIDEO_EXT = /\.(mp4|webm|mov|m4v)(\?.*)?$/i;
 // See the matching comment in privacy.mjs: the scanned page is untrusted content, and an unbounded
@@ -18,7 +18,7 @@ export async function checkVideoAssets(rawUrl, { allowPrivate = false, threshold
   // safeFetch re-validates every redirect hop on both the page fetch and each per-video HEAD
   // request — a bare fetch() follows redirects by default, which is a straightforward SSRF bypass.
   const { res, finalUrl } = await safeFetch(url, { allowPrivate, init: { headers: { "User-Agent": "website-precheck/1.0 (+video-weight-check)" } } });
-  const html = (await res.text()).slice(0, MAX_SCAN_CHARS);
+  const html = await readTextCapped(res, MAX_SCAN_CHARS);
   const base = new URL(finalUrl);
   const srcs = new Set();
   for (const m of html.matchAll(/<(?:video|source)[^>]+src=["']([^"']+)["']/gi)) if (VIDEO_EXT.test(m[1])) srcs.add(m[1]);
