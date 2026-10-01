@@ -62,7 +62,7 @@ Rules of the road: batch deploys (each push can restart the site); give fixes as
 honest about what you did and didn't verify; separate "only the site owner can do this" (rotate
 secrets, DNS, 2FA, legal sign-off) from what you can do.
 
-The free command-line tools and the full method are at github.com/PacificAILabs/web-guardrails.
+The free command-line tools and the full method are at github.com/amandamalavedev/web-guardrails.
 ```
 
 ## Conversation starters

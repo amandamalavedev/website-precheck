@@ -3,7 +3,7 @@
 **Free website checks — performance, accessibility, security headers, and SEO files — plus the
 methods behind them. The guardrails for AI-written code.**
 
-From [Pacific AI Labs](https://github.com/PacificAILabs). Free and open (MIT). Use them four ways:
+From [Pacific AI Labs](https://github.com/amandamalavedev). Free and open (MIT). Use them four ways:
 
 | Use it as… | For whom | Status |
 |---|---|---|
@@ -37,7 +37,7 @@ The CLI tells you *what's* wrong; the skills teach Claude *how to fix it* — th
 a score. Copy the ones you want:
 
 ```bash
-git clone https://github.com/PacificAILabs/web-guardrails.git
+git clone https://github.com/amandamalavedev/web-guardrails.git
 cp -r web-guardrails/site-hardening-and-speed  ~/.claude/skills/
 # …and any others below
 ```

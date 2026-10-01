@@ -29,7 +29,7 @@ if (!cmd || cmd === "help" || cmd === "-h" || cmd === "--help") {
   npx web-guardrails a11y https://example.com
   npx web-guardrails headers https://example.com
   npx web-guardrails sitemap --dir ./public --base https://example.com\n
-Full method and the Claude skills: https://github.com/PacificAILabs/web-guardrails\n`);
+Full method and the Claude skills: https://github.com/amandamalavedev/web-guardrails\n`);
   process.exit(cmd ? 0 : 1);
 }
 

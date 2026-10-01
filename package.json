@@ -15,6 +15,6 @@
   "keywords": ["lighthouse", "accessibility", "a11y", "wcag", "axe", "security-headers", "seo", "sitemap", "website", "audit", "cli"],
   "license": "MIT",
   "author": "Pacific AI Labs",
-  "homepage": "https://github.com/PacificAILabs/web-guardrails",
-  "repository": { "type": "git", "url": "https://github.com/PacificAILabs/web-guardrails.git" }
+  "homepage": "https://github.com/amandamalavedev/web-guardrails",
+  "repository": { "type": "git", "url": "https://github.com/amandamalavedev/web-guardrails.git" }
 }
