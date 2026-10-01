@@ -1,4 +1,4 @@
-// Shared safety helpers for the web-guardrails checks.
+// Shared safety helpers for the precheck checks.
 // A distributed skill carries its own copy of this file next to the script that imports it.
 //
 // These exist because the toolkit may be driven by an AI agent acting on untrusted input (a web

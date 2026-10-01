@@ -1,6 +1,6 @@
-# Web Guardrails MCP server
+# Website Precheck MCP server
 
-Exposes the free Web Guardrails checks as tools any MCP-capable agent can call live:
+Exposes the free Website Precheck checks as tools any MCP-capable agent can call live:
 
 - `check_security_headers` — which security headers a URL sends vs. what's missing.
 - `run_lighthouse` — performance score, Core Web Vitals, LCP breakdown, failing audits.
@@ -16,7 +16,7 @@ it is defense in depth, not a guarantee — read [../SECURITY.md](../SECURITY.md
 
 ## Install
 
-The MCP server ships inside the one `web-guardrails` package (it shares the `lib/` engine), so a
+The MCP server ships inside the one `precheck` package (it shares the `lib/` engine), so a
 normal install of the package brings it and its dependencies:
 
 ```bash
@@ -30,11 +30,11 @@ npm install puppeteer-core   # only if you want the accessibility tool
 ## Add it to Claude Code
 
 ```bash
-claude mcp add web-guardrails -- node /absolute/path/to/web-guardrails/mcp/server.mjs
+claude mcp add precheck -- node /absolute/path/to/website-precheck/mcp/server.mjs
 ```
 
 Or in any MCP client's config, register a **stdio** server with command `node` and arg
-`.../web-guardrails/mcp/server.mjs`. Then ask the agent to "check the security headers on
+`.../website-precheck/mcp/server.mjs`. Then ask the agent to "check the security headers on
 example.com" and it calls the tool.
 
 ## Use it from ChatGPT (Custom GPT Action)

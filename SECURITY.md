@@ -1,6 +1,6 @@
 # Security model
 
-Web Guardrails runs website checks that may be driven by an AI agent acting on **untrusted input**
+Website Precheck runs website checks that may be driven by an AI agent acting on **untrusted input**
 (a URL from a web page, a README, a chat). The checks are hardened to **substantially raise the bar**
 against a tricked agent turning them into a local-command or internal-network attack — but this is
 defense in depth, not a guarantee. It is a tool for testing sites **you own or are authorized to

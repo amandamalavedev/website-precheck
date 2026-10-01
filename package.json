@@ -1,12 +1,11 @@
 {
-  "name": "web-guardrails",
+  "name": "precheck",
   "version": "0.1.0",
-  "description": "Free website checks — performance, accessibility, security headers, and SEO files — that any project can run. No AI model required. Also available as Claude skills and an MCP server.",
+  "description": "Check your website before you launch — test speed, accessibility, and security headers, generate essential SEO files, and get guidance on what to fix. Works with your terminal or AI coding assistant.",
   "type": "module",
   "bin": {
-    "web-guardrails": "bin/wg.mjs",
-    "wg": "bin/wg.mjs",
-    "web-guardrails-mcp": "mcp/server.mjs"
+    "precheck": "bin/precheck.mjs",
+    "precheck-mcp": "mcp/server.mjs"
   },
   "files": [
     "bin/",
@@ -46,9 +45,9 @@
   ],
   "license": "MIT",
   "author": "Pacific AI Labs",
-  "homepage": "https://github.com/amandamalavedev/web-guardrails",
+  "homepage": "https://github.com/amandamalavedev/website-precheck",
   "repository": {
     "type": "git",
-    "url": "https://github.com/amandamalavedev/web-guardrails.git"
+    "url": "https://github.com/amandamalavedev/website-precheck.git"
   }
 }

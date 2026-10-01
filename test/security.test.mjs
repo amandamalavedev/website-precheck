@@ -1,4 +1,4 @@
-// Security tests for the web-guardrails safety layer — one abuse case and a normal control per
+// Security tests for the precheck safety layer — one abuse case and a normal control per
 // finding from the pre-publish review. Fast and offline (no network, no browser).
 //   node --test test/
 import { test } from "node:test";
@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { assertSafeUrl, isPrivateIp, sandboxOptIn, assertDirInside, writeFileContained } from "../lib/safe.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const WG = join(HERE, "..", "bin", "wg.mjs");
+const WG = join(HERE, "..", "bin", "precheck.mjs");
 
 // ── F1: command injection — input never reaches a shell ──────────────────────────────────────────
 test("F1 abuse: non-http(s) schemes and malformed URLs are refused before anything runs", async () => {

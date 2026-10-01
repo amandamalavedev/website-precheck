@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Web Guardrails MCP server — exposes the free website checks as tools any MCP-capable agent can call.
+// Website Precheck MCP server — exposes the free website checks as tools any MCP-capable agent can call.
 // Same engine as the CLI (../lib), wrapped as MCP tools over stdio.
 //
 // Run:   node mcp/server.mjs
@@ -28,7 +28,7 @@ function runCheck(file, args) {
 }
 const text = (s) => ({ content: [{ type: "text", text: s }] });
 
-const server = new McpServer({ name: "web-guardrails", version: "0.1.0" });
+const server = new McpServer({ name: "precheck", version: "0.1.0" });
 
 // SCOPE (applies to every tool below, and is repeated in each description because the agent reads
 // those): these are for sites the user OWNS OR IS AUTHORIZED TO TEST, not arbitrary agent-chosen
@@ -60,4 +60,4 @@ server.registerTool("generate_sitemap",
 const transport = new StdioServerTransport();
 await server.connect(transport);
 // stderr is fine for a status line; stdout is the MCP channel, keep it clean.
-console.error("web-guardrails MCP server ready (stdio) — tools: check_security_headers, run_lighthouse, check_accessibility, generate_sitemap");
+console.error("precheck MCP server ready (stdio) — tools: check_security_headers, run_lighthouse, check_accessibility, generate_sitemap");

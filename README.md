@@ -1,37 +1,28 @@
-# Web Guardrails
+# Website Precheck
 
-**Free website skills anyone can use — to make a site secure, fast, accessible, and found.**
+**Check your website before you launch — all in one toolkit.**
 
-A skill here is one capability you hand to your tools. Five of them, from
-[Pacific AI Labs](https://github.com/amandamalavedev):
+Test speed, accessibility, and security headers, generate essential SEO files, and get guidance on
+what to fix. Works with your terminal or AI coding assistant. Free and open, from
+[Pacific AI Labs](https://github.com/amandamalavedev).
 
-| Skill | Makes your site… |
+| Use it as… | For whom |
 |---|---|
-| **Security · Speed · Privacy** | safe, fast, and honest about data |
-| **Admin / CMS** | editable — change text, swap pictures, see analytics, manage users |
-| **SEO & GEO** | found by Google *and* cited by AI answer engines |
-| **Analytics** | measurable, without tracking cookies |
-| **Accessibility & Launch** | usable by everyone, and truly ready to ship |
-
-The point: **use the same skills in whatever you work with.** You don't need to use Claude, or any AI
-at all.
-
-| Use them as… | For whom |
-|---|---|
-| **A command** — `npx web-guardrails <check> <url>` | Anyone. No AI, no account. |
+| **A command** — `npx precheck <check> <url>` | Anyone. No AI, no account. |
 | **Claude skills** — drop into `~/.claude/skills/` | Claude Code users |
-| **An MCP server** — any agent calls them live | Any MCP-capable AI (incl. ChatGPT) |
+| **An MCP server** — any agent calls the checks live | Any MCP-capable AI (incl. ChatGPT) |
 | **A Custom GPT** | ChatGPT users |
 
-Same skills underneath (`lib/`); four ways to run them.
+The same checks underneath (`lib/`); four ways to run them. You don't need to use Claude, or any AI
+at all.
 
 ## Run a skill from the command line (works for everyone)
 
 ```bash
-npx web-guardrails headers    https://example.com     # security headers: present vs missing
-npx web-guardrails lighthouse https://example.com     # performance + LCP breakdown + what to fix
-npx web-guardrails a11y       https://example.com     # accessibility (WCAG 2.1 AA) via axe-core
-npx web-guardrails sitemap --dir ./build --base https://example.com   # sitemap.xml + robots.txt + llms.txt
+npx precheck headers    https://example.com     # security headers: present vs missing
+npx precheck lighthouse https://example.com     # performance + LCP breakdown + what to fix
+npx precheck a11y       https://example.com     # accessibility (WCAG 2.1 AA) via axe-core
+npx precheck sitemap --dir ./build --base https://example.com   # sitemap.xml + robots.txt + llms.txt
 ```
 
 - `headers` and `sitemap` are pure Node — no browser, no external install.
@@ -56,8 +47,8 @@ The command tells you *what's* wrong; the Claude skill teaches Claude *how to fi
 method, not just a score. Copy the ones you want:
 
 ```bash
-git clone https://github.com/amandamalavedev/web-guardrails.git
-cp -r web-guardrails/site-hardening-and-speed  ~/.claude/skills/
+git clone https://github.com/amandamalavedev/website-precheck.git
+cp -r website-precheck/site-hardening-and-speed  ~/.claude/skills/
 # …and any others
 ```
 
