@@ -1,22 +1,32 @@
 #!/usr/bin/env node
 // Website Precheck MCP server — exposes the free website checks as tools any MCP-capable agent can call.
-// Same engine as the CLI (../lib), wrapped as MCP tools over stdio.
+// Calls the lib/ functions directly, in-process, and returns structured JSON — not captured
+// terminal text — so a calling agent gets real data to reason over, not a text blob to re-parse.
+// `generate_sitemap` is the one exception: sitemap.mjs runs its logic at import time and calls
+// process.exit() itself, so it isn't safe to import into a long-lived server process; it still
+// shells out, same as before.
 //
 // Run:   node mcp/server.mjs
 // Add to an MCP client (e.g. Claude Code) as a stdio server pointing at this file.
-// Tools: run_lighthouse, check_accessibility, check_security_headers, generate_sitemap.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { checkHeaders } from "../lib/headers.mjs";
+import { checkA11y } from "../lib/a11y.mjs";
+import { runLighthouse } from "../lib/lighthouse.mjs";
+import { checkCookies } from "../lib/cookies.mjs";
+import { checkPrivacy } from "../lib/privacy.mjs";
+import { checkVideoAssets } from "../lib/media.mjs";
+import { runReport } from "../lib/report.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const lib = (f) => join(here, "..", "lib", f);
 
-// Run a lib check and capture its output as text (the same scripts the CLI runs).
-function runCheck(file, args) {
+// Only generate_sitemap still shells out — see header note.
+function runScript(file, args) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [lib(file), ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
@@ -27,6 +37,15 @@ function runCheck(file, args) {
   });
 }
 const text = (s) => ({ content: [{ type: "text", text: s }] });
+const json = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj, null, 2) }] });
+// A refusal (SSRF guard, bad URL, no Chrome) becomes a clear tool error, not an unhandled crash
+// that takes the whole server down with it.
+function guarded(fn) {
+  return async (args) => {
+    try { return json(await fn(args)); }
+    catch (e) { return { content: [{ type: "text", text: `Refused or failed: ${e.message}` }], isError: true }; }
+  };
+}
 
 const server = new McpServer({ name: "precheck", version: "0.1.0" });
 
@@ -37,27 +56,49 @@ const server = new McpServer({ name: "precheck", version: "0.1.0" });
 // NOT a full guarantee. Residual network risks (DNS rebinding; Lighthouse follows redirects
 // without per-request filtering) are documented in SECURITY.md.
 const SCOPE = " Only for sites you own or are authorized to test (not arbitrary URLs); refuses private/internal/metadata addresses by default (set allowPrivate for a trusted local site). Residual risks in SECURITY.md.";
+
+server.registerTool("precheck_report",
+  { title: "Full precheck report", description: "Run all five checks in one go — Security, Governance, Privacy, Speed, Accessibility — and return the combined structured result: findings with a plain-English why/fix and, where one can be generated, the actual code to fix it on this site (not generic advice)." + SCOPE,
+    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional(), skipLighthouse: z.boolean().optional(), skipA11y: z.boolean().optional(), skipCookies: z.boolean().optional(), skipVideo: z.boolean().optional(), skipPrivacy: z.boolean().optional() } },
+  guarded(({ url, allowPrivate, skipLighthouse, skipA11y, skipCookies, skipVideo, skipPrivacy }) =>
+    runReport(url, { allowPrivate, skipLighthouse, skipA11y, skipCookies, skipVideo, skipPrivacy })));
+
 server.registerTool("check_security_headers",
   { title: "Check security headers", description: "Fetch a URL and report which recommended HTTP security headers are present or missing (CSP, HSTS, nosniff, frame, referrer, permissions) and whether it leaks its server software. Non-destructive GET." + SCOPE,
     inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional() } },
-  async ({ url, allowPrivate }) => text(await runCheck("headers.mjs", [url, ...(allowPrivate ? ["--allow-private"] : [])])));
+  guarded(({ url, allowPrivate }) => checkHeaders(url, { allowPrivate })));
 
 server.registerTool("run_lighthouse",
-  { title: "Run Lighthouse", description: "Run Lighthouse against a URL (median of N runs) and return performance score, Core Web Vitals, the LCP element and its phase breakdown, and the failing audits. Needs Chrome. NOTE: Lighthouse drives its own browser, so only the initial URL is address-checked — a page that redirects to an internal address is NOT blocked, so run it only against sites you trust." + SCOPE,
+  { title: "Run Lighthouse", description: "Run Lighthouse against a URL (median of N runs) and return the performance score, Core Web Vitals, the exact device/network conditions tested (never just \"mobile\"/\"4G\"), the LCP element and its phase breakdown, and the failing audits. Needs Chrome. NOTE: Lighthouse drives its own browser, so only the initial URL is address-checked — a page that redirects to an internal address is NOT blocked, so run it only against sites you trust." + SCOPE,
     inputSchema: { url: z.string().url(), runs: z.number().int().min(1).max(5).optional(), form: z.enum(["mobile", "desktop"]).optional(), allowPrivate: z.boolean().optional() } },
-  async ({ url, runs, form, allowPrivate }) => text(await runCheck("lighthouse.mjs", [url, ...(runs ? ["--runs", String(runs)] : []), ...(form ? ["--form", form] : []), ...(allowPrivate ? ["--allow-private"] : [])])));
+  guarded(({ url, runs, form, allowPrivate }) => runLighthouse(url, { runs, form, allowPrivate })));
 
 server.registerTool("check_accessibility",
   { title: "Check accessibility (WCAG 2.1 AA)", description: "Run axe-core against a URL in headless Chrome and report WCAG 2.1 A/AA violations by severity with the offending elements and fix links. Catches ~a third of issues — a human still does the keyboard/contrast pass. Needs Chrome + puppeteer-core. Every browser request (redirects and subresources) is address-filtered, though DNS rebinding remains a residual risk (SECURITY.md)." + SCOPE,
     inputSchema: { url: z.string().url(), full: z.boolean().optional(), allowPrivate: z.boolean().optional() } },
-  async ({ url, full, allowPrivate }) => text(await runCheck("a11y.mjs", [url, ...(full ? ["--full"] : []), ...(allowPrivate ? ["--allow-private"] : [])])));
+  guarded(({ url, full, allowPrivate }) => checkA11y(url, { full, allowPrivate })));
+
+server.registerTool("check_cookies",
+  { title: "Check cookie governance", description: "List every cookie a site's first response sets and flag any missing Secure/SameSite. Does not judge a missing HttpOnly — a cookie a script needs to read (a CSRF token) is sometimes correctly non-HttpOnly, so that's a human call, not an automated finding." + SCOPE,
+    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional() } },
+  guarded(({ url, allowPrivate }) => checkCookies(url, { allowPrivate })));
+
+server.registerTool("check_privacy",
+  { title: "Check third-party privacy disclosure", description: "Find third-party script/iframe origins a page loads, label the recognizable analytics/ad/tracking services among them, and check for a privacy policy link. An unrecognized origin (a CDN, a webfont host) is listed for transparency, never flagged on its own." + SCOPE,
+    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional() } },
+  guarded(({ url, allowPrivate }) => checkPrivacy(url, { allowPrivate })));
+
+server.registerTool("check_video_weight",
+  { title: "Check video asset weight", description: "Find local <video>/<source> files a page references and report their real size, flagging ones over a size threshold (default 2000 KiB) — heavy hero/background video is often the single biggest thing on a page and isn't a stock Lighthouse audit." + SCOPE,
+    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional(), thresholdKiB: z.number().optional() } },
+  guarded(({ url, allowPrivate, thresholdKiB }) => checkVideoAssets(url, { allowPrivate, thresholdKiB })));
 
 server.registerTool("generate_sitemap",
   { title: "Generate sitemap.xml", description: "Generate sitemap.xml (+ robots.txt and an llms.txt starter) for a built static site directory, under the given base URL. Writes only inside that directory; won't overwrite existing files unless overwrite is true.",
     inputSchema: { dir: z.string(), base: z.string().url(), out: z.string().optional(), overwrite: z.boolean().optional() } },
-  async ({ dir, base, out, overwrite }) => text(await runCheck("sitemap.mjs", ["--dir", dir, "--base", base, ...(out ? ["--out", out] : []), ...(overwrite ? ["--overwrite"] : [])])));
+  async ({ dir, base, out, overwrite }) => text(await runScript("sitemap.mjs", ["--dir", dir, "--base", base, ...(out ? ["--out", out] : []), ...(overwrite ? ["--overwrite"] : [])])));
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
 // stderr is fine for a status line; stdout is the MCP channel, keep it clean.
-console.error("precheck MCP server ready (stdio) — tools: check_security_headers, run_lighthouse, check_accessibility, generate_sitemap");
+console.error("precheck MCP server ready (stdio) — tools: precheck_report, check_security_headers, run_lighthouse, check_accessibility, check_cookies, check_privacy, check_video_weight, generate_sitemap");
