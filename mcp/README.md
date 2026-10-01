@@ -2,9 +2,14 @@
 
 Exposes the free Website Precheck checks as tools any MCP-capable agent can call live:
 
+- `precheck_report` — run the full multi-pillar audit and return one structured report.
 - `check_security_headers` — which security headers a URL sends vs. what's missing.
 - `run_lighthouse` — performance score, Core Web Vitals, LCP breakdown, failing audits.
 - `check_accessibility` — WCAG 2.1 A/AA violations via axe-core.
+- `check_cookies` — cookies set on the first response and their flags (HttpOnly, Secure, SameSite).
+- `check_privacy` — third-party trackers the page loads.
+- `check_video_weight` — oversized video assets worth compressing.
+- `check_schema` — structured data (JSON-LD) found on the page and how complete it is.
 - `generate_sitemap` — sitemap.xml + robots.txt + llms.txt for a built site.
 
 Same engine as the CLI (`../lib`), wrapped over stdio with the MCP SDK.
