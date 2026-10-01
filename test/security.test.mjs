@@ -274,3 +274,53 @@ test("F8 regression: scanning a pathological multi-megabyte page stays fast", as
     assert.deepEqual(result.thirdParty, []);
   } finally { server.close(); }
 });
+
+// ── F9: structured data (schema.org/JSON-LD) detection and scoring ────────────────────────────────
+test("F9 control: a complete Organization block scores 100%", async () => {
+  const html = `<html><head><script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"Organization","name":"Acme","url":"https://acme.test","logo":"https://acme.test/logo.png","sameAs":["https://x.com/acme"]}
+  </script></head><body></body></html>`;
+  const server = createServer((req, res) => { res.writeHead(200, { "Content-Type": "text/html" }); res.end(html); });
+  const port = await listen(server);
+  try {
+    const { checkSchema } = await import("../lib/schema.mjs");
+    const r = await checkSchema(`http://127.0.0.1:${port}/`, { allowPrivate: true });
+    assert.equal(r.hasSchema, true);
+    assert.equal(r.blocks.length, 1);
+    assert.equal(r.blocks[0].type, "Organization");
+    assert.equal(r.blocks[0].score, 100);
+    assert.equal(r.malformed, 0);
+  } finally { server.close(); }
+});
+test("F9 regression: an incomplete block reports exactly which fields are missing", async () => {
+  const html = `<script type="application/ld+json">{"@type":"LocalBusiness","name":"Acme Shop"}</script>`;
+  const server = createServer((req, res) => { res.writeHead(200, { "Content-Type": "text/html" }); res.end(html); });
+  const port = await listen(server);
+  try {
+    const { checkSchema } = await import("../lib/schema.mjs");
+    const r = await checkSchema(`http://127.0.0.1:${port}/`, { allowPrivate: true });
+    assert.equal(r.blocks[0].score, 25); // 1 of 4 recommended fields (name) present
+    assert.deepEqual(r.blocks[0].missing.sort(), ["address", "telephone", "url"]);
+  } finally { server.close(); }
+});
+test("F9 regression: malformed JSON-LD is flagged, not silently dropped or crashed on", async () => {
+  const html = `<script type="application/ld+json">{"@type":"Organization", "name": "Acme",}</script>`; // trailing comma — invalid JSON
+  const server = createServer((req, res) => { res.writeHead(200, { "Content-Type": "text/html" }); res.end(html); });
+  const port = await listen(server);
+  try {
+    const { checkSchema } = await import("../lib/schema.mjs");
+    const r = await checkSchema(`http://127.0.0.1:${port}/`, { allowPrivate: true });
+    assert.equal(r.malformed, 1);
+    assert.equal(r.blocks.length, 0);
+  } finally { server.close(); }
+});
+test("F9 control: no structured data on the page is reported honestly, not as an error", async () => {
+  const server = createServer((req, res) => { res.writeHead(200, { "Content-Type": "text/html" }); res.end("<html><body>hi</body></html>"); });
+  const port = await listen(server);
+  try {
+    const { checkSchema } = await import("../lib/schema.mjs");
+    const r = await checkSchema(`http://127.0.0.1:${port}/`, { allowPrivate: true });
+    assert.equal(r.hasSchema, false);
+    assert.equal(r.overallScore, null);
+  } finally { server.close(); }
+});

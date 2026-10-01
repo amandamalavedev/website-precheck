@@ -24,6 +24,7 @@ const COMMANDS = {
   cookies:    { file: "cookies.mjs",    blurb: "Governance: every cookie the site sets, flagged for missing Secure/SameSite" },
   privacy:    { file: "privacy.mjs",    blurb: "Privacy: third-party trackers the page loads, and whether a privacy policy is linked" },
   media:      { file: "media.mjs",      blurb: "Finds local <video> sources over a size threshold" },
+  schema:     { file: "schema.mjs",     blurb: "SEO: finds structured data (JSON-LD) and scores how complete it is" },
   sitemap:    { file: "sitemap.mjs",    blurb: "Generate sitemap.xml + robots.txt + llms.txt for a built site" },
 };
 

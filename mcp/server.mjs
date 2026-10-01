@@ -20,6 +20,7 @@ import { runLighthouse } from "../lib/lighthouse.mjs";
 import { checkCookies } from "../lib/cookies.mjs";
 import { checkPrivacy } from "../lib/privacy.mjs";
 import { checkVideoAssets } from "../lib/media.mjs";
+import { checkSchema } from "../lib/schema.mjs";
 import { runReport } from "../lib/report.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -58,10 +59,10 @@ const server = new McpServer({ name: "precheck", version: "0.1.0" });
 const SCOPE = " Only for sites you own or are authorized to test (not arbitrary URLs); refuses private/internal/metadata addresses by default (set allowPrivate for a trusted local site). Residual risks in SECURITY.md.";
 
 server.registerTool("precheck_report",
-  { title: "Full precheck report", description: "Run all five checks in one go — Security, Governance, Privacy, Speed, Accessibility — and return the combined structured result: findings with a plain-English why/fix and, where one can be generated, the actual code to fix it on this site (not generic advice)." + SCOPE,
-    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional(), skipLighthouse: z.boolean().optional(), skipA11y: z.boolean().optional(), skipCookies: z.boolean().optional(), skipVideo: z.boolean().optional(), skipPrivacy: z.boolean().optional() } },
-  guarded(({ url, allowPrivate, skipLighthouse, skipA11y, skipCookies, skipVideo, skipPrivacy }) =>
-    runReport(url, { allowPrivate, skipLighthouse, skipA11y, skipCookies, skipVideo, skipPrivacy })));
+  { title: "Full precheck report", description: "Run all six checks in one go — Security, Governance, Privacy, Speed, Accessibility, SEO — and return the combined structured result: findings with a plain-English why/fix and, where one can be generated, the actual code to fix it on this site (not generic advice)." + SCOPE,
+    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional(), skipLighthouse: z.boolean().optional(), skipA11y: z.boolean().optional(), skipCookies: z.boolean().optional(), skipVideo: z.boolean().optional(), skipPrivacy: z.boolean().optional(), skipSchema: z.boolean().optional() } },
+  guarded(({ url, allowPrivate, skipLighthouse, skipA11y, skipCookies, skipVideo, skipPrivacy, skipSchema }) =>
+    runReport(url, { allowPrivate, skipLighthouse, skipA11y, skipCookies, skipVideo, skipPrivacy, skipSchema })));
 
 server.registerTool("check_security_headers",
   { title: "Check security headers", description: "Fetch a URL and report which recommended HTTP security headers are present or missing (CSP, HSTS, nosniff, frame, referrer, permissions) and whether it leaks its server software. Non-destructive GET." + SCOPE,
@@ -93,6 +94,11 @@ server.registerTool("check_video_weight",
     inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional(), thresholdKiB: z.number().optional() } },
   guarded(({ url, allowPrivate, thresholdKiB }) => checkVideoAssets(url, { allowPrivate, thresholdKiB })));
 
+server.registerTool("check_schema",
+  { title: "Check structured data (SEO)", description: "Find every JSON-LD (<script type=\"application/ld+json\">) block on a page, identify each object's @type, and score it against a baseline set of recommended properties for that type. Flags malformed JSON-LD (invalid JSON is silently ignored by search engines, so a broken block looks present but contributes nothing)." + SCOPE,
+    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional() } },
+  guarded(({ url, allowPrivate }) => checkSchema(url, { allowPrivate })));
+
 server.registerTool("generate_sitemap",
   { title: "Generate sitemap.xml", description: "Generate sitemap.xml (+ robots.txt and an llms.txt starter) for a built static site directory, under the given base URL. Writes only inside that directory; won't overwrite existing files unless overwrite is true.",
     inputSchema: { dir: z.string(), base: z.string().url(), out: z.string().optional(), overwrite: z.boolean().optional() } },
@@ -101,4 +107,4 @@ server.registerTool("generate_sitemap",
 const transport = new StdioServerTransport();
 await server.connect(transport);
 // stderr is fine for a status line; stdout is the MCP channel, keep it clean.
-console.error("precheck MCP server ready (stdio) — tools: precheck_report, check_security_headers, run_lighthouse, check_accessibility, check_cookies, check_privacy, check_video_weight, generate_sitemap");
+console.error("precheck MCP server ready (stdio) — tools: precheck_report, check_security_headers, run_lighthouse, check_accessibility, check_cookies, check_privacy, check_video_weight, check_schema, generate_sitemap");

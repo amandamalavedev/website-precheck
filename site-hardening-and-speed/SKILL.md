@@ -89,17 +89,17 @@ pitfalls that are easy to miss.
 
 ## Scripts
 
-- `scripts/report.mjs <url>` — **start here for a launch/handoff check.** Runs all five checks below
+- `scripts/report.mjs <url>` — **start here for a launch/handoff check.** Runs all six checks below
   against one URL — Security, Governance (cookies), Privacy (third-party trackers + disclosure),
-  Speed (Lighthouse + video weight), Accessibility — and writes a shareable report in three forms:
-  `precheck-report.json` (the raw data), `precheck-report.html` (a self-contained page — a gauge per
-  pillar, a plain-English description of what's checked, a "fix this first" list tagged by category
-  and severity, every finding with why-it-matters + **the actual code for this site** where one can be
-  generated — no server needed, just send the file), and `precheck-report.md` (a short summary for a
-  terminal or PR comment). `node scripts/report.mjs https://example.com --out ./report`. A check that
-  can't run (no Chrome, no puppeteer-core) degrades to a noted "skipped" entry rather than failing the
-  whole report. Add `--allow-private` for a local dev URL, `--skip-a11y`/`--skip-lighthouse`/
-  `--skip-cookies`/`--skip-video`/`--skip-privacy` to go faster.
+  Speed (Lighthouse + video weight), Accessibility, SEO (structured data) — and writes a shareable
+  report in three forms: `precheck-report.json` (the raw data), `precheck-report.html` (a self-contained
+  page — a gauge per pillar, a plain-English description of what's checked, a "fix this first" list
+  tagged by category and severity, every finding with why-it-matters + **the actual code for this
+  site** where one can be generated — no server needed, just send the file), and `precheck-report.md`
+  (a short summary for a terminal or PR comment). `node scripts/report.mjs https://example.com --out
+  ./report`. A check that can't run (no Chrome, no puppeteer-core) degrades to a noted "skipped" entry
+  rather than failing the whole report. Add `--allow-private` for a local dev URL, `--skip-a11y`/
+  `--skip-lighthouse`/`--skip-cookies`/`--skip-video`/`--skip-privacy`/`--skip-schema` to go faster.
 - Branding is opt-in and off by default — this is a general-purpose open-source tool, so it never
   ships someone else's logo on your report. Pass `--brand-name "Your Name" --brand-logo path/to/
   logo.webp --brand-tagline "..." --brand-url https://...` to stamp the report with your own identity
@@ -121,6 +121,10 @@ pitfalls that are easy to miss.
 - `scripts/media.mjs <url>` — finds `<video>`/`<source>` tags pointing at local video files and
   reports their real size. Not a stock Lighthouse audit, but a heavy hero/background video is
   routinely the single biggest thing on a page — bigger than any image.
+- `scripts/schema.mjs <url>` — the SEO check on its own: finds every JSON-LD block, identifies its
+  `@type`, and scores it against a baseline set of recommended properties for that type — not just
+  "is schema present" but "is it actually filled in." Flags malformed JSON-LD separately — invalid
+  JSON is silently ignored by search engines, so a broken block looks present but contributes nothing.
 - `scripts/serve-with-headers.mjs <dir> [--port 4747]` — **use this, not `python -m http.server` or
   `npx http-server`, to preview a static site locally before testing it.** Those ignore the `_headers`
   file entirely (it's a Netlify/Cloudflare Pages-only convention, not a web standard), so running
