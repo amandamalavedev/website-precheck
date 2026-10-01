@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Automated accessibility check: drive headless Chrome, inject axe-core, report WCAG violations.
-// Usage:  node a11y-check.mjs <url> [--wait 2000] [--full]
+// Usage:  node a11y.mjs <url> [--wait 2000] [--full]
 //   --wait   ms to wait after load for JS-rendered content (default 2000)
 //   --full   include "best-practice" rules too, not just WCAG A/AA
 //
@@ -105,7 +105,7 @@ const isMain = (() => { try { return import.meta.url === pathToFileURL(process.a
 if (isMain) {
   const args = process.argv.slice(2);
   const rawUrl = args.find((a) => /^https?:\/\//.test(a));
-  if (!rawUrl) { console.error("Usage: node a11y-check.mjs <url> [--wait 2000] [--full] [--allow-private]"); process.exit(2); }
+  if (!rawUrl) { console.error("Usage: node a11y.mjs <url> [--wait 2000] [--full] [--allow-private]"); process.exit(2); }
   const waitIdx = args.indexOf("--wait");
   const wait = waitIdx >= 0 && args[waitIdx + 1] ? Number(args[waitIdx + 1]) : 2000;
   const full = args.includes("--full");

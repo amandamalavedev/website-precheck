@@ -41,8 +41,9 @@ that redeploys on every git push. Adapt the specifics; keep the method.
    user's own site (this method tests your own property only).
 2. **Inventory, then audit.** For security, list every route and its auth guard first
    (`references/security-audit.md` → "Route inventory"). For speed, run Lighthouse to get a baseline
-   (`scripts/lighthouse.mjs`). For privacy, list what the site actually collects and what it sets in
-   the browser (`references/privacy-cookies-us.md`).
+   (`scripts/lighthouse.mjs`, or `scripts/report.mjs` for the combined security+speed+a11y check with
+   a shareable output). For privacy, list what the site actually collects and what it sets in the
+   browser (`references/privacy-cookies-us.md`).
 3. **Fix in batches, not one-at-a-time.** If the platform redeploys on every push (Railway, Render,
    Fly, most PaaS), each push restarts the site and interrupts users — many small pushes in a day
    look like repeated crashing. Group related fixes into one commit, test locally, push once.
@@ -71,10 +72,25 @@ pitfalls that are easy to miss.
 
 ## Scripts
 
-- `scripts/lighthouse.mjs <url>` — runs Lighthouse (median of N runs) and prints a decision-ready
-  summary: scores, Core Web Vitals, the LCP element and its phase breakdown, and the failing audits
-  ranked by saving, each with the offending URLs. Use this instead of asking the user to paste a
-  report. `node scripts/lighthouse.mjs https://example.com --runs 3 --form mobile`.
+- `scripts/report.mjs <url>` — **start here for a launch/handoff check.** Runs headers + Lighthouse +
+  accessibility against one URL and writes a shareable report in three forms: `precheck-report.json`
+  (the raw data), `precheck-report.html` (a self-contained, Lighthouse-style page — score gauges, a
+  "fix this first" list, every finding grouped by severity with a plain-English why + fix — no server
+  needed, just send the file), and `precheck-report.md` (a short summary for a terminal or PR
+  comment). `node scripts/report.mjs https://example.com --out ./report`. A check that can't run (no
+  Chrome, no puppeteer-core) degrades to a noted "skipped" entry rather than failing the whole report.
+  Add `--allow-private` for a local dev URL, `--skip-a11y`/`--skip-lighthouse` to go faster.
+- `scripts/headers.mjs <url>` — just the security-header check on its own, printed to the terminal.
+- `scripts/lighthouse.mjs <url>` — just Lighthouse on its own: scores, Core Web Vitals, the LCP element
+  and its phase breakdown, and the failing audits ranked by saving, each with the offending URLs.
+  `node scripts/lighthouse.mjs https://example.com --runs 3 --form mobile`.
+- `scripts/a11y.mjs <url>` — just the accessibility check on its own (see also the
+  `accessibility-launch-readiness` skill, which vendors the same check as `a11y-check.mjs` alongside
+  the manual WCAG pass).
+
+Use `report.mjs` instead of asking the user to paste a DevTools/Lighthouse report, and instead of
+running each check separately and hand-assembling the findings — the combined report with real
+severity and fix guidance is the actual deliverable, not the raw tool output.
 
 ## When you finish
 
