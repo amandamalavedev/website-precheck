@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 // precheck CLI — free website checks any project can run, no AI model required.
+//   precheck report     <url> [--out dir] [--brand-name ...]   — all five checks, one HTML/JSON/MD report
 //   precheck lighthouse <url> [--runs 3] [--form mobile|desktop]
 //   precheck a11y       <url> [--wait 2000] [--full]
 //   precheck headers    <url>
+//   precheck cookies    <url>
+//   precheck privacy    <url>
+//   precheck media      <url>
 //   precheck sitemap    --dir ./build --base https://example.com [--out ./build]
 // Each command just runs the matching check in lib/ and forwards your flags.
 import { spawn } from "node:child_process";
@@ -13,9 +17,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const lib = (f) => join(here, "..", "lib", f);
 
 const COMMANDS = {
+  report:     { file: "report.mjs",     blurb: "All five checks in one go — Security, Governance, Privacy, Speed, Accessibility — as a shareable HTML/JSON/MD report" },
   lighthouse: { file: "lighthouse.mjs", blurb: "Lighthouse performance (median of N runs) + LCP breakdown + failing audits" },
   a11y:       { file: "a11y.mjs",       blurb: "WCAG 2.1 AA check via axe-core (needs puppeteer-core + Chrome)" },
   headers:    { file: "headers.mjs",    blurb: "HTTP security headers: what's present, what's missing" },
+  cookies:    { file: "cookies.mjs",    blurb: "Governance: every cookie the site sets, flagged for missing Secure/SameSite" },
+  privacy:    { file: "privacy.mjs",    blurb: "Privacy: third-party trackers the page loads, and whether a privacy policy is linked" },
+  media:      { file: "media.mjs",      blurb: "Finds local <video> sources over a size threshold" },
   sitemap:    { file: "sitemap.mjs",    blurb: "Generate sitemap.xml + robots.txt + llms.txt for a built site" },
 };
 
@@ -25,9 +33,12 @@ if (!cmd || cmd === "help" || cmd === "-h" || cmd === "--help") {
   console.log(`\nprecheck — free website checks\n`);
   for (const [name, { blurb }] of Object.entries(COMMANDS)) console.log(`  precheck ${name.padEnd(11)} ${blurb}`);
   console.log(`\nExamples:
+  npx precheck report https://example.com --out ./report
   npx precheck lighthouse https://example.com --runs 3
   npx precheck a11y https://example.com
   npx precheck headers https://example.com
+  npx precheck cookies https://example.com
+  npx precheck privacy https://example.com
   npx precheck sitemap --dir ./public --base https://example.com\n
 Full method and the Claude skills: https://github.com/amandamalavedev/website-precheck\n`);
   process.exit(cmd ? 0 : 1);
