@@ -1,71 +1,89 @@
 # Web Guardrails
 
-**Free website checks — performance, accessibility, security headers, and SEO files — plus the
-methods behind them. The guardrails for AI-written code.**
+**Free website skills anyone can use — to make a site secure, fast, accessible, and found.**
 
-From [Pacific AI Labs](https://github.com/amandamalavedev). Free and open (MIT). Use them four ways:
+A skill here is one capability you hand to your tools. Five of them, from
+[Pacific AI Labs](https://github.com/amandamalavedev):
 
-| Use it as… | For whom | Status |
-|---|---|---|
-| **A CLI** — `npx web-guardrails <check> <url>` | Anyone. No AI model required. | ✅ ready |
-| **Claude skills** — drop into `~/.claude/skills/` | Claude Code users | ✅ ready |
-| **An MCP server** — any agent calls the checks live | Any MCP-capable LLM | ✅ ready ([mcp/](./mcp)) |
-| **A Custom GPT** | ChatGPT users | ✅ kit ready ([gpt/](./gpt)) |
+| Skill | Makes your site… |
+|---|---|
+| **Security · Speed · Privacy** | safe, fast, and honest about data |
+| **Admin / CMS** | editable — change text, swap pictures, see analytics, manage users |
+| **SEO & GEO** | found by Google *and* cited by AI answer engines |
+| **Analytics** | measurable, without tracking cookies |
+| **Accessibility & Launch** | usable by everyone, and truly ready to ship |
 
-Same engine underneath (`lib/`); four wrappers on top. The CLI and MCP server run the checks; the
-Claude skills and Custom GPT also teach the *method* behind them.
+The point: **use the same skills in whatever you work with.** You don't need to use Claude, or any AI
+at all.
 
-## The CLI (works for everyone)
+| Use them as… | For whom |
+|---|---|
+| **A command** — `npx web-guardrails <check> <url>` | Anyone. No AI, no account. |
+| **Claude skills** — drop into `~/.claude/skills/` | Claude Code users |
+| **An MCP server** — any agent calls them live | Any MCP-capable AI (incl. ChatGPT) |
+| **A Custom GPT** | ChatGPT users |
+
+Same skills underneath (`lib/`); four ways to run them.
+
+## Run a skill from the command line (works for everyone)
 
 ```bash
-npx web-guardrails lighthouse https://example.com     # performance + LCP breakdown + what to fix
-npx web-guardrails a11y       https://example.com     # WCAG 2.1 AA via axe-core
 npx web-guardrails headers    https://example.com     # security headers: present vs missing
+npx web-guardrails lighthouse https://example.com     # performance + LCP breakdown + what to fix
+npx web-guardrails a11y       https://example.com     # accessibility (WCAG 2.1 AA) via axe-core
 npx web-guardrails sitemap --dir ./build --base https://example.com   # sitemap.xml + robots.txt + llms.txt
 ```
 
-- `lighthouse` uses `npx lighthouse@12` under the hood — nothing to install, needs Chrome.
-- `a11y` needs `puppeteer-core` in your project (`npm install --no-save puppeteer-core`) and Chrome;
-  it bypasses the page's CSP for the scan so it works even on well-hardened sites.
 - `headers` and `sitemap` are pure Node — no browser, no deps.
+- `lighthouse` uses `npx lighthouse@12` under the hood (needs Chrome).
+- `a11y` needs Chrome + `puppeteer-core` (`npm install --no-save puppeteer-core`); it bypasses the
+  page's CSP for the scan so it works even on well-hardened sites.
 
-No model, no account, no telemetry. It just runs the check and prints what to fix.
+No model, no account, no telemetry — it just runs the check and prints what to fix.
 
-## The Claude skills
+## Use them as Claude skills
 
-The CLI tells you *what's* wrong; the skills teach Claude *how to fix it* — the full method, not just
-a score. Copy the ones you want:
+The command tells you *what's* wrong; the Claude skill teaches Claude *how to fix it* — the full
+method, not just a score. Copy the ones you want:
 
 ```bash
 git clone https://github.com/amandamalavedev/web-guardrails.git
 cp -r web-guardrails/site-hardening-and-speed  ~/.claude/skills/
-# …and any others below
+# …and any others
 ```
 
-| Category | Skill | What it does |
-|---|---|---|
-| **Security · Speed · Privacy** | [`site-hardening-and-speed`](./site-hardening-and-speed) | Outsider-view security audit, Lighthouse performance, US/local privacy + cookie compliance. |
-| **Admin / CMS** | [`site-admin-panel`](./site-admin-panel) | The gated back office: edit content, upload & replace pictures (WebP + EXIF-stripped), view analytics, manage users. |
-| **SEO & GEO** | [`seo-geo-schema`](./seo-geo-schema) | Meta/Open Graph, JSON-LD schema, sitemap, robots, `llms.txt` — found by search *and* cited by AI answer engines. *(Public sites only.)* |
-| **Analytics** | [`analytics-and-search-console`](./analytics-and-search-console) | Cookieless analytics (no consent banner) + Google Search Console. *(Public sites only.)* |
-| **Accessibility & Launch** | [`accessibility-launch-readiness`](./accessibility-launch-readiness) | WCAG 2.1 AA pass + the pre-launch QA checklist. The final gate. |
+| Skill | What it does |
+|---|---|
+| [`site-hardening-and-speed`](./site-hardening-and-speed) | Outsider-view security audit, Lighthouse performance, US/local privacy + cookie compliance. |
+| [`site-admin-panel`](./site-admin-panel) | The gated back office: edit content, upload & replace pictures (WebP + EXIF-stripped), view analytics, manage users. |
+| [`seo-geo-schema`](./seo-geo-schema) | Meta/Open Graph, JSON-LD schema, sitemap, robots, `llms.txt`. *(Public sites only.)* |
+| [`analytics-and-search-console`](./analytics-and-search-console) | Cookieless analytics (no consent banner) + Google Search Console. *(Public sites only.)* |
+| [`accessibility-launch-readiness`](./accessibility-launch-readiness) | WCAG 2.1 AA pass + the pre-launch QA checklist. |
 
-Then just ask Claude Code to harden a site, run Lighthouse, add schema, or do a launch review — the
+Then just ask Claude to harden a site, run Lighthouse, add schema, or do a launch review — the
 matching skill loads itself.
+
+## Use them from any agent (MCP) or from ChatGPT
+
+- **MCP server** ([`mcp/`](./mcp)) — exposes the checks as tools any MCP-capable agent can call live.
+  One command adds it to Claude Code; see [mcp/README.md](./mcp/README.md).
+- **Custom GPT kit** ([`gpt/`](./gpt)) — the instructions to paste into ChatGPT's builder so a Custom
+  GPT uses the same method.
 
 ## Two ideas run through all of it
 
 - **Two site profiles.** Every build starts by asking: **Public** (indexed, wants SEO and analytics)
-  or **Private** (gated, `noindex`, no public analytics)? Half the skills only apply to public sites,
-  and running them on a private one is actively wrong.
-- **Verify, don't guess.** Pasted audit reports are often stale or hallucinated. These tools check the
-  real code and the live site, and never call something done until it's verified against production.
+  or **Private** (gated, `noindex`, no public analytics)? Some skills only apply to public sites —
+  running them on a private one is actively wrong.
+- **Verify, don't guess.** Pasted audit reports are often stale or hallucinated. These skills check
+  the real code and the live site, and never call something done until it's verified against
+  production.
 
 ## License
 
 MIT — see [LICENSE](./LICENSE). Use them, fork them, build on them.
 
-More free tools coming from **Pacific AI Labs** — guardrails for AI-written code.
+More free skills coming from **Pacific AI Labs** — guardrails for AI-written code.
 
 ---
 

@@ -30,25 +30,28 @@ const text = (s) => ({ content: [{ type: "text", text: s }] });
 
 const server = new McpServer({ name: "web-guardrails", version: "0.1.0" });
 
+// allowPrivate defaults to false: by default these tools refuse loopback/private/metadata addresses,
+// so a prompt-injected agent can't turn them into an internal-network probe (SSRF). A human can set
+// it true for a site they trust on their own network.
 server.registerTool("check_security_headers",
-  { title: "Check security headers", description: "Fetch a URL and report which recommended HTTP security headers are present or missing (CSP, HSTS, nosniff, frame, referrer, permissions) and whether it leaks its server software. Non-destructive GET.",
-    inputSchema: { url: z.string().url() } },
-  async ({ url }) => text(await runCheck("headers.mjs", [url])));
+  { title: "Check security headers", description: "Fetch a URL and report which recommended HTTP security headers are present or missing (CSP, HSTS, nosniff, frame, referrer, permissions) and whether it leaks its server software. Non-destructive GET. Refuses private/internal addresses unless allowPrivate is true.",
+    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional() } },
+  async ({ url, allowPrivate }) => text(await runCheck("headers.mjs", [url, ...(allowPrivate ? ["--allow-private"] : [])])));
 
 server.registerTool("run_lighthouse",
-  { title: "Run Lighthouse", description: "Run Lighthouse against a URL (median of N runs) and return performance score, Core Web Vitals, the LCP element and its phase breakdown, and the failing audits ranked by saving. Needs Chrome; uses npx lighthouse.",
-    inputSchema: { url: z.string().url(), runs: z.number().int().min(1).max(5).optional(), form: z.enum(["mobile", "desktop"]).optional() } },
-  async ({ url, runs, form }) => text(await runCheck("lighthouse.mjs", [url, ...(runs ? ["--runs", String(runs)] : []), ...(form ? ["--form", form] : [])])));
+  { title: "Run Lighthouse", description: "Run Lighthouse against a URL (median of N runs) and return performance score, Core Web Vitals, the LCP element and its phase breakdown, and the failing audits. Needs Chrome. Refuses private/internal addresses unless allowPrivate is true.",
+    inputSchema: { url: z.string().url(), runs: z.number().int().min(1).max(5).optional(), form: z.enum(["mobile", "desktop"]).optional(), allowPrivate: z.boolean().optional() } },
+  async ({ url, runs, form, allowPrivate }) => text(await runCheck("lighthouse.mjs", [url, ...(runs ? ["--runs", String(runs)] : []), ...(form ? ["--form", form] : []), ...(allowPrivate ? ["--allow-private"] : [])])));
 
 server.registerTool("check_accessibility",
-  { title: "Check accessibility (WCAG 2.1 AA)", description: "Run axe-core against a URL in headless Chrome and report WCAG 2.1 A/AA violations by severity with the offending elements and fix links. Catches ~a third of issues — a human still does the keyboard/contrast pass. Needs Chrome + puppeteer-core.",
-    inputSchema: { url: z.string().url(), full: z.boolean().optional() } },
-  async ({ url, full }) => text(await runCheck("a11y.mjs", [url, ...(full ? ["--full"] : [])])));
+  { title: "Check accessibility (WCAG 2.1 AA)", description: "Run axe-core against a URL in headless Chrome and report WCAG 2.1 A/AA violations by severity with the offending elements and fix links. Catches ~a third of issues — a human still does the keyboard/contrast pass. Needs Chrome + puppeteer-core. Refuses private/internal addresses unless allowPrivate is true.",
+    inputSchema: { url: z.string().url(), full: z.boolean().optional(), allowPrivate: z.boolean().optional() } },
+  async ({ url, full, allowPrivate }) => text(await runCheck("a11y.mjs", [url, ...(full ? ["--full"] : []), ...(allowPrivate ? ["--allow-private"] : [])])));
 
 server.registerTool("generate_sitemap",
-  { title: "Generate sitemap.xml", description: "Generate sitemap.xml (+ robots.txt and an llms.txt starter) for a built static site directory, under the given base URL. Writes files to --out (or the dir).",
-    inputSchema: { dir: z.string(), base: z.string().url(), out: z.string().optional() } },
-  async ({ dir, base, out }) => text(await runCheck("sitemap.mjs", ["--dir", dir, "--base", base, ...(out ? ["--out", out] : [])])));
+  { title: "Generate sitemap.xml", description: "Generate sitemap.xml (+ robots.txt and an llms.txt starter) for a built static site directory, under the given base URL. Writes only inside that directory; won't overwrite existing files unless overwrite is true.",
+    inputSchema: { dir: z.string(), base: z.string().url(), out: z.string().optional(), overwrite: z.boolean().optional() } },
+  async ({ dir, base, out, overwrite }) => text(await runCheck("sitemap.mjs", ["--dir", dir, "--base", base, ...(out ? ["--out", out] : []), ...(overwrite ? ["--overwrite"] : [])])));
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
