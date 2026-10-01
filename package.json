@@ -1,0 +1,20 @@
+{
+  "name": "web-guardrails",
+  "version": "0.1.0",
+  "description": "Free website checks — performance, accessibility, security headers, and SEO files — that any project can run. No AI model required. Also available as Claude skills and an MCP server.",
+  "type": "module",
+  "bin": {
+    "web-guardrails": "bin/wg.mjs",
+    "wg": "bin/wg.mjs"
+  },
+  "files": ["bin/", "lib/", "README.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "optionalDependencies": {
+    "puppeteer-core": "^23"
+  },
+  "keywords": ["lighthouse", "accessibility", "a11y", "wcag", "axe", "security-headers", "seo", "sitemap", "website", "audit", "cli"],
+  "license": "MIT",
+  "author": "Pacific AI Labs",
+  "homepage": "https://github.com/PacificAILabs/web-guardrails",
+  "repository": { "type": "git", "url": "https://github.com/PacificAILabs/web-guardrails.git" }
+}
