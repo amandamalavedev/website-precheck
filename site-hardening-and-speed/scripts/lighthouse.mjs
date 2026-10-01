@@ -110,7 +110,10 @@ export async function runLighthouse(rawUrl, {
     .map(({ x, saving, bytes }) => ({
       id: x.id, title: x.title, displayValue: x.displayValue || null,
       metricSavingMs: saving || null, bytes: bytes || null,
-      urls: [...new Set(findItems(x.details).map((it) => it.url || it.source?.url).filter(Boolean))].slice(0, 3),
+      // Some audits (e.g. unused-css-rules on an inline <style> block) put the actual CSS/JS source
+      // text in this field instead of a URL — reject anything that isn't genuinely URL-shaped so a
+      // code snippet downstream never gets built against a chunk of someone's stylesheet by mistake.
+      urls: [...new Set(findItems(x.details).map((it) => it.url || it.source?.url).filter((u) => typeof u === "string" && u.length < 300 && !/[{}\n]/.test(u) && /^(https?:\/\/|\/|\.\.?\/|[\w.-]+\/[\w./-]+\.\w+$)/.test(u)))].slice(0, 3),
     }));
 
   return {
