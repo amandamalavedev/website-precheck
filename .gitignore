@@ -2,3 +2,4 @@ node_modules/
 lighthouse-reports/
 *.log
 .DS_Store
+_smoke.mjs

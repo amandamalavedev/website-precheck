@@ -9,10 +9,11 @@ From [Pacific AI Labs](https://github.com/PacificAILabs). Free and open (MIT). U
 |---|---|---|
 | **A CLI** — `npx web-guardrails <check> <url>` | Anyone. No AI model required. | ✅ ready |
 | **Claude skills** — drop into `~/.claude/skills/` | Claude Code users | ✅ ready |
-| **A Custom GPT** | ChatGPT users | 🔜 coming |
-| **An MCP server** — any agent calls the checks live | Any MCP-capable LLM | 🔜 coming |
+| **An MCP server** — any agent calls the checks live | Any MCP-capable LLM | ✅ ready ([mcp/](./mcp)) |
+| **A Custom GPT** | ChatGPT users | ✅ kit ready ([gpt/](./gpt)) |
 
-Same engine underneath; four wrappers on top.
+Same engine underneath (`lib/`); four wrappers on top. The CLI and MCP server run the checks; the
+Claude skills and Custom GPT also teach the *method* behind them.
 
 ## The CLI (works for everyone)
 

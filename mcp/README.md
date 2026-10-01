@@ -1,0 +1,37 @@
+# Web Guardrails MCP server
+
+Exposes the free Web Guardrails checks as tools any MCP-capable agent can call live:
+
+- `check_security_headers` — which security headers a URL sends vs. what's missing.
+- `run_lighthouse` — performance score, Core Web Vitals, LCP breakdown, failing audits.
+- `check_accessibility` — WCAG 2.1 A/AA violations via axe-core.
+- `generate_sitemap` — sitemap.xml + robots.txt + llms.txt for a built site.
+
+Same engine as the CLI (`../lib`), wrapped over stdio with the MCP SDK.
+
+## Install
+
+```bash
+cd mcp
+npm install
+npm install puppeteer-core   # only if you want the accessibility tool
+```
+
+`run_lighthouse` needs Chrome (it uses `npx lighthouse@12`). `check_accessibility` needs Chrome +
+`puppeteer-core`. `check_security_headers` and `generate_sitemap` need neither.
+
+## Add it to Claude Code
+
+```bash
+claude mcp add web-guardrails -- node /absolute/path/to/web-guardrails/mcp/server.mjs
+```
+
+Or in any MCP client's config, register a **stdio** server with command `node` and arg
+`.../web-guardrails/mcp/server.mjs`. Then ask the agent to "check the security headers on
+example.com" and it calls the tool.
+
+## Use it from ChatGPT (Custom GPT Action)
+
+ChatGPT calls HTTP Actions, not stdio MCP directly. To wire these checks into a Custom GPT, put a thin
+HTTP layer in front of this server (or call the `../lib` scripts from a small API) and give the GPT
+that API's OpenAPI schema as an Action. See `../gpt/custom-gpt-kit.md`.
