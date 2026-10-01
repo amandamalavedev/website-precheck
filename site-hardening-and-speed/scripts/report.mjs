@@ -4,7 +4,7 @@
 // plain-English translation of every finding, a prioritized "fix this first" list, and findings
 // grouped by severity with why-it-matters-to-you + what-to-do — is what makes this worth more than
 // pasting raw tool output at someone who doesn't already know what `permissions-policy` means.
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertSafeUrl, flag, writeFileContained } from "./safe.mjs";
@@ -13,6 +13,7 @@ import { checkA11y } from "./a11y.mjs";
 import { runLighthouse } from "./lighthouse.mjs";
 import { checkCookies } from "./cookies.mjs";
 import { checkVideoAssets } from "./media.mjs";
+import { checkPrivacy } from "./privacy.mjs";
 
 const SEV_RANK = { high: 0, medium: 1, low: 2 };
 const SEV_LABEL = { high: "High", medium: "Medium", low: "Low" };
@@ -206,8 +207,8 @@ function generateCode(f, siteUrl) {
 // ---- Run every check that succeeds; a failed optional check becomes a "skipped" note, not a crash
 // for the whole report — a site with no Chrome available should still get its header findings. ----
 export async function runReport(rawUrl, {
-  allowPrivate = false, skipLighthouse = false, skipA11y = false, skipCookies = false, skipVideo = false,
-  lighthouseRuns = 3, lighthouseForm = "mobile", outDir = "lighthouse-reports",
+  allowPrivate = false, skipLighthouse = false, skipA11y = false, skipCookies = false, skipVideo = false, skipPrivacy = false,
+  lighthouseRuns = 3, lighthouseForm = "mobile", outDir = "lighthouse-reports", brand = null,
 } = {}) {
   const url = await assertSafeUrl(rawUrl, { allowPrivate }); // fail fast, before running anything
   const startedAt = new Date().toISOString();
@@ -317,6 +318,28 @@ export async function runReport(rawUrl, {
     } catch (e) { skipped.push({ check: "video", reason: e.message }); }
   } else skipped.push({ check: "video", reason: "skipped by request" });
 
+  // ---- Privacy: what THIRD PARTIES this page exposes visitors to, and whether that's disclosed.
+  // Distinct from Governance above (what THIS site itself sets) — a page can set zero cookies of its
+  // own and still hand visitor data to Google Analytics, a Meta Pixel, etc. ----
+  let privacy = null;
+  if (!skipPrivacy) {
+    try {
+      privacy = await checkPrivacy(url, { allowPrivate });
+      if (privacy.trackers.length && !privacy.hasPrivacyLink) {
+        const names = [...new Set(privacy.trackers.map((t) => t.label))];
+        findings.push({
+          severity: "high", category: "Privacy", title: `Third-party trackers present with no privacy policy link`,
+          label: "Third-party disclosure", why: `Detected: ${names.join(", ")}.`,
+          fix: "Add a visible privacy policy link disclosing what's collected and by whom.",
+          meta: names.join(", "), key: "privacy:undisclosed-trackers",
+          plain: `This page loads ${names.join(" and ")}, but there's no privacy policy link telling visitors about it.`,
+          impact: `${names.join(" and ")} can see that this visitor came to this page — standard behavior for these tools, but visitors have no way to know it's happening without a disclosure.`,
+          fixPlain: "Add a privacy policy page (linked from the footer is standard) that names what's collected and who it's shared with.",
+        });
+      }
+    } catch (e) { skipped.push({ check: "privacy", reason: e.message }); }
+  } else skipped.push({ check: "privacy", reason: "skipped by request" });
+
   // Attach the plain-English translation to every finding before sorting — this is the field the
   // renderers lead with; `title`/`why`/`fix` stay as the technical record underneath. Findings that
   // already set plain/impact/fixPlain directly (cookies, video) pass through unchanged, since the
@@ -344,15 +367,16 @@ export async function runReport(rawUrl, {
   const counts = { high: findings.filter((f) => f.severity === "high").length, medium: findings.filter((f) => f.severity === "medium").length, low: findings.filter((f) => f.severity === "low").length };
   const verdict = counts.high > 0 ? "urgent" : counts.medium > 0 ? "attention" : "good";
 
-  // One gauge per thing actually tested — Security / Governance / Speed / Accessibility — not just
-  // a single Lighthouse score. Security/Governance/Accessibility are a flat deduction from their own
-  // findings' severity; Speed uses Lighthouse's own calibrated score when it ran (the real, familiar
-  // number), falling back to the same deduction scheme when Lighthouse was skipped.
+  // One gauge per thing actually tested — Security / Governance / Privacy / Speed / Accessibility —
+  // not just a single Lighthouse score. Security/Governance/Privacy/Accessibility are a flat
+  // deduction from their own findings' severity; Speed uses Lighthouse's own calibrated score when
+  // it ran (the real, familiar number), falling back to the same deduction scheme when skipped.
   const SEV_WEIGHT = { high: 25, medium: 10, low: 4 };
   const deductionScore = (cat) => Math.max(0, 100 - findings.filter((f) => f.category === cat).reduce((sum, f) => sum + (SEV_WEIGHT[f.severity] || 0), 0));
   const categoryScores = {
     Security: deductionScore("Security"),
     Governance: deductionScore("Governance"),
+    Privacy: deductionScore("Privacy"),
     Speed: lighthouse ? lighthouse.categoryScores.performance?.score ?? deductionScore("Speed") : deductionScore("Speed"),
     Accessibility: deductionScore("Accessibility"),
   };
@@ -360,8 +384,8 @@ export async function runReport(rawUrl, {
   return {
     tool: "website-precheck", version: "0.1.0", url, startedAt, finishedAt: new Date().toISOString(),
     scores: lighthouse ? Object.fromEntries(Object.entries(lighthouse.categoryScores).map(([k, v]) => [k, v.score])) : null,
-    categoryScores,
-    headers, lighthouse, a11y, cookies, video, findings, counts, verdict, skipped,
+    categoryScores, brand,
+    headers, lighthouse, a11y, cookies, video, privacy, findings, counts, verdict, skipped,
   };
 }
 
@@ -376,8 +400,10 @@ const VERDICT_SUMMARY = {
 };
 
 export function toMarkdown(report) {
-  const { url, counts, verdict, findings, scores, skipped } = report;
-  const lines = [`# Website Precheck — ${url}`, "", `Run: ${report.startedAt}`, "", VERDICT_SUMMARY[verdict](counts), ""];
+  const { url, counts, verdict, findings, scores, skipped, brand } = report;
+  const lines = [`# Website Precheck — ${url}`, ""];
+  if (brand?.name) lines.push(`_by ${brand.name}${brand.tagline ? " — " + brand.tagline : ""}_`, "");
+  lines.push(`Run: ${report.startedAt}`, "", VERDICT_SUMMARY[verdict](counts), "");
   if (scores) lines.push(`**Lighthouse:** ${Object.entries(scores).map(([k, v]) => `${k} ${v}`).join(" · ")}`, "");
   lines.push(`**Findings:** ${counts.high} high · ${counts.medium} medium · ${counts.low} low`, "");
   if (findings.length) {
@@ -449,11 +475,11 @@ function findingCard(f) {
 }
 
 export function toHTML(report) {
-  const { url, startedAt, categoryScores, counts, verdict, findings, headers, a11y, cookies, lighthouse, skipped } = report;
+  const { url, startedAt, categoryScores, counts, verdict, findings, headers, a11y, cookies, privacy, lighthouse, skipped, brand } = report;
   const date = new Date(startedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
 
-  // One gauge per thing this report actually checks — the familiar four-gauge layout, but for our
-  // own four pillars (Security, Governance, Speed, Accessibility) instead of Lighthouse's own set.
+  // One gauge per thing this report actually checks — the familiar Lighthouse-style gauge row, but
+  // for our own pillars (Security, Governance, Privacy, Speed, Accessibility) instead of theirs.
   const topGauges = Object.entries(categoryScores).map(([k, v]) => gauge(k, v)).join("");
 
   const fmtMs = (v) => (v == null ? "—" : v >= 1000 ? (v / 1000).toFixed(2) + " s" : v + " ms");
@@ -480,7 +506,8 @@ export function toHTML(report) {
     Security: "Things that could let someone attack your site or its visitors.",
     Speed: "Things slowing the page down for real visitors.",
     Accessibility: "Things that make the site hard or impossible for some visitors to use.",
-    Governance: "What this site actually collects and stores in a visitor's browser.",
+    Governance: "What this site itself collects and stores in a visitor's browser.",
+    Privacy: "What third parties this site exposes visitors to, and whether that's disclosed.",
   };
   const findingsHTML = Object.entries(byCategory).map(([cat, items]) => `
     <section class="cat-section">
@@ -490,8 +517,11 @@ export function toHTML(report) {
     </section>`).join("") || (findings.length ? `<p class="all-clear">Everything else is covered in “Fix this first” above — nothing more to add.</p>` : `<p class="all-clear">No findings in any category — nothing to fix right now.</p>`);
 
   const headersChecklist = headers ? `
-    <ul class="checklist">
-      ${headers.checks.map((c) => `<li class="${c.present ? "pass" : "fail"}"><span class="tick">${c.present ? "✓" : "✗"}</span> ${esc(HEADER_LABEL[c.name] || c.name)} <code>${esc(c.name)}</code></li>`).join("")}
+    <ul class="checklist checklist-why">
+      ${headers.checks.map((c) => `<li class="${c.present ? "pass" : "fail"}">
+        <span class="tick">${c.present ? "✓" : "✗"}</span>
+        <div><div class="checklist-name">${esc(HEADER_LABEL[c.name] || c.name)} <code>${esc(c.name)}</code></div><div class="checklist-why-text">${esc(c.why)}</div></div>
+      </li>`).join("")}
     </ul>` : `<p class="muted">Not checked${skipped.find((s) => s.check === "headers") ? ": " + esc(skipped.find((s) => s.check === "headers").reason) : ""}.</p>`;
 
   const a11yFindings = findings.filter((f) => f.category === "Accessibility");
@@ -510,6 +540,16 @@ export function toHTML(report) {
     : `<p class="muted">Not checked${skipped.find((s) => s.check === "cookies") ? ": " + esc(skipped.find((s) => s.check === "cookies").reason) : ""}.</p>`;
   const governanceSection = cookieInventory + governanceFindings.map(findingCard).join("")
     + `<p class="muted">This lists what's set on the first response only, and doesn't judge whether HttpOnly should be on or off — a cookie a script needs to read (like a CSRF token) is sometimes correctly non-HttpOnly. Full consent/compliance review is a manual pass — see the privacy-cookies-us reference.</p>`;
+
+  const privacyFindings = findings.filter((f) => f.category === "Privacy");
+  const trackerInventory = privacy
+    ? (privacy.thirdParty.length
+        ? `<ul class="checklist">${privacy.thirdParty.map((t) => `<li class="${t.label ? "fail" : "pass"}"><span class="tick">${t.label ? "!" : "·"}</span> ${esc(t.label || t.host)} <code>${esc(t.host)}</code></li>`).join("")}
+           <li class="${privacy.hasPrivacyLink ? "pass" : "fail"}"><span class="tick">${privacy.hasPrivacyLink ? "✓" : "✗"}</span> Privacy policy link ${privacy.hasPrivacyLink ? "found" : "not found"}</li></ul>`
+        : `<p class="all-clear">No third-party scripts or embeds detected on this page.</p>`)
+    : `<p class="muted">Not checked${skipped.find((s) => s.check === "privacy") ? ": " + esc(skipped.find((s) => s.check === "privacy").reason) : ""}.</p>`;
+  const privacySection = trackerInventory + privacyFindings.map(findingCard).join("")
+    + `<p class="muted">Third-party origins are listed for transparency, not flagged on their own — a CDN or webfont host isn't a tracker. Only a recognized analytics/ad/tracking service with no privacy policy link becomes a finding.</p>`;
 
   const VERDICT_TITLE = { urgent: "Urgent issues found", attention: "A few things worth fixing", good: "Looking good" };
   const verdictText = VERDICT_SUMMARY[verdict](counts);
@@ -607,8 +647,16 @@ export function toHTML(report) {
   ul.checklist li.fail .tick{color:var(--bad);}
   ul.checklist li.fail{color:var(--ink-dim);}
   ul.checklist code{margin-left:auto; color:var(--ink-faint);}
+  ul.checklist-why li{align-items:flex-start;}
+  ul.checklist-why .checklist-name{font-weight:600; color:var(--ink);}
+  ul.checklist-why .checklist-name code{margin-left:6px; font-weight:400;}
+  ul.checklist-why .checklist-why-text{color:var(--ink-faint); font-size:12.5px; margin-top:1px;}
   code{background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:12.5px;}
   .muted{color:var(--ink-faint); font-size:13px;}
+  .brand-block{display:flex; align-items:center; gap:10px;}
+  .brand-block img{width:36px; height:36px; border-radius:8px; flex-shrink:0;}
+  .brand-block .brand-text h1{font-size:19px; margin:0;}
+  .brand-block .brand-text .brand-by{font-size:12px; color:var(--ink-faint);}
   .metrics-row{display:flex; flex-wrap:wrap; gap:18px; justify-content:center; padding:4px 0;}
   .metric{text-align:center; min-width:72px;}
   .metric-val{font-size:18px; font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums;}
@@ -621,7 +669,9 @@ export function toHTML(report) {
 <body>
 <div class="wrap">
   <header class="top">
-    <h1>Website Precheck</h1>
+    ${brand?.logoDataUri
+      ? `<div class="brand-block"><img src="${brand.logoDataUri}" alt="${esc(brand.name || "")} logo"><div class="brand-text"><h1>Website Precheck</h1><div class="brand-by">by ${esc(brand.name || "")}</div></div></div>`
+      : `<h1>Website Precheck</h1>`}
     <div class="meta">${esc(date)}</div>
   </header>
 
@@ -630,12 +680,13 @@ export function toHTML(report) {
   </div>
 
   <div class="skill-desc">
-    This report checks four things on <strong>${esc(url)}</strong>: <strong>Security</strong> (headers,
-    cookie flags, HTTPS), <strong>Governance</strong> (what data and cookies the site actually sets in
-    a visitor's browser), <strong>Speed</strong> (Lighthouse performance, Core Web Vitals, video
+    This report checks five things on <strong>${esc(url)}</strong>: <strong>Security</strong> (headers,
+    cookie flags, HTTPS), <strong>Governance</strong> (what data and cookies the site itself sets in a
+    visitor's browser), <strong>Privacy</strong> (what third parties the site exposes visitors to, and
+    whether that's disclosed), <strong>Speed</strong> (Lighthouse performance, Core Web Vitals, video
     weight), and <strong>Accessibility</strong> (automated WCAG 2.1 A/AA checks). Every finding below
     says why it matters in plain terms and, where one can be generated, the actual code to fix it on
-    this site — not generic advice.
+    this site — not generic advice.${brand?.tagline ? `<br><br><strong>Why ${esc(brand.name || "we")} built this:</strong> ${esc(brand.tagline)}` : ""}
   </div>
 
   <div class="verdict ${verdict}">
@@ -677,11 +728,16 @@ export function toHTML(report) {
   </div>
 
   <div class="card">
+    <h2>Privacy (third parties)</h2>
+    ${privacySection}
+  </div>
+
+  <div class="card">
     <h2>Accessibility</h2>
     ${a11ySection}
   </div>
 
-  <footer>Generated by <a href="https://github.com/amandamalavedev/website-precheck">website-precheck</a> — a free, open tool. Automated checks catch real issues but not everything; pair with a manual pass.</footer>
+  <footer>Generated by <a href="https://github.com/amandamalavedev/website-precheck">website-precheck</a>${brand?.url ? ` · <a href="${esc(brand.url)}">${esc(brand.name)}</a>` : ""} — a free, open tool. Automated checks catch real issues but not everything; pair with a manual pass.</footer>
 </div>
 </body>
 </html>`;
@@ -706,9 +762,24 @@ const isMain = (() => { try { return import.meta.url === pathToFileURL(process.a
 if (isMain) {
   const args = process.argv.slice(2);
   const rawUrl = args.find((a) => /^https?:\/\//.test(a));
-  if (!rawUrl) { console.error("Usage: node report.mjs <url> [--out dir] [--skip-lighthouse] [--skip-a11y] [--skip-cookies] [--skip-video] [--allow-private]"); process.exit(2); }
+  if (!rawUrl) { console.error("Usage: node report.mjs <url> [--out dir] [--skip-lighthouse] [--skip-a11y] [--skip-cookies] [--skip-video] [--skip-privacy] [--allow-private] [--brand-name N] [--brand-logo path] [--brand-tagline T] [--brand-url U]"); process.exit(2); }
   const opt = (name, def) => { const i = args.indexOf("--" + name); return i >= 0 && args[i + 1] ? args[i + 1] : def; };
   const outDir = opt("out", "precheck-report");
+
+  // Branding is opt-in and never shipped by this open-source tool by default — pass --brand-* to
+  // stamp a report with your own identity (logo embedded as a data URI so the HTML stays portable).
+  let brand = null;
+  const brandName = opt("brand-name");
+  if (brandName) {
+    const logoPath = opt("brand-logo");
+    let logoDataUri;
+    if (logoPath) {
+      const ext = logoPath.split(".").pop().toLowerCase();
+      const mime = { webp: "image/webp", png: "image/png", svg: "image/svg+xml", jpg: "image/jpeg", jpeg: "image/jpeg" }[ext] || "application/octet-stream";
+      logoDataUri = `data:${mime};base64,${readFileSync(resolve(logoPath)).toString("base64")}`;
+    }
+    brand = { name: brandName, logoDataUri, tagline: opt("brand-tagline"), url: opt("brand-url") };
+  }
 
   let report;
   try {
@@ -718,8 +789,10 @@ if (isMain) {
       skipA11y: flag(args, "skip-a11y"),
       skipCookies: flag(args, "skip-cookies"),
       skipVideo: flag(args, "skip-video"),
+      skipPrivacy: flag(args, "skip-privacy"),
       lighthouseRuns: Number(opt("runs", "3")) || 3,
       lighthouseForm: opt("form", "mobile"),
+      brand,
     });
   } catch (e) {
     console.error(/private|local|valid URL/i.test(e.message) ? "Refused: " + e.message : e.message);

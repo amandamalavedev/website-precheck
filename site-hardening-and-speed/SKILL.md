@@ -89,16 +89,21 @@ pitfalls that are easy to miss.
 
 ## Scripts
 
-- `scripts/report.mjs <url>` — **start here for a launch/handoff check.** Runs all four checks below
-  against one URL — Security, Governance (cookies), Speed (Lighthouse + video weight), Accessibility
-  — and writes a shareable report in three forms: `precheck-report.json` (the raw data),
-  `precheck-report.html` (a self-contained page — score gauges, a "fix this first" list, every finding
-  with a plain-English why + fix **and the actual code for this site** where one can be generated — no
-  server needed, just send the file), and `precheck-report.md` (a short summary for a terminal or PR
-  comment). `node scripts/report.mjs https://example.com --out ./report`. A check that can't run (no
-  Chrome, no puppeteer-core) degrades to a noted "skipped" entry rather than failing the whole report.
-  Add `--allow-private` for a local dev URL, `--skip-a11y`/`--skip-lighthouse`/`--skip-cookies`/
-  `--skip-video` to go faster.
+- `scripts/report.mjs <url>` — **start here for a launch/handoff check.** Runs all five checks below
+  against one URL — Security, Governance (cookies), Privacy (third-party trackers + disclosure),
+  Speed (Lighthouse + video weight), Accessibility — and writes a shareable report in three forms:
+  `precheck-report.json` (the raw data), `precheck-report.html` (a self-contained page — a gauge per
+  pillar, a plain-English description of what's checked, a "fix this first" list tagged by category
+  and severity, every finding with why-it-matters + **the actual code for this site** where one can be
+  generated — no server needed, just send the file), and `precheck-report.md` (a short summary for a
+  terminal or PR comment). `node scripts/report.mjs https://example.com --out ./report`. A check that
+  can't run (no Chrome, no puppeteer-core) degrades to a noted "skipped" entry rather than failing the
+  whole report. Add `--allow-private` for a local dev URL, `--skip-a11y`/`--skip-lighthouse`/
+  `--skip-cookies`/`--skip-video`/`--skip-privacy` to go faster.
+- Branding is opt-in and off by default — this is a general-purpose open-source tool, so it never
+  ships someone else's logo on your report. Pass `--brand-name "Your Name" --brand-logo path/to/
+  logo.webp --brand-tagline "..." --brand-url https://...` to stamp the report with your own identity
+  (the logo is embedded as a data URI so the HTML file stays a single portable file).
 - `scripts/headers.mjs <url>` — just the security-header check on its own, printed to the terminal.
 - `scripts/lighthouse.mjs <url>` — just Lighthouse on its own: scores, Core Web Vitals, the LCP element
   and its phase breakdown, and the failing audits ranked by saving, each with the offending URLs.
@@ -109,6 +114,10 @@ pitfalls that are easy to miss.
 - `scripts/cookies.mjs <url>` — the Governance check on its own: every cookie the first response
   sets, flagged for missing `Secure`/`SameSite`. Deliberately doesn't judge `HttpOnly` — a cookie a
   script needs to read (a CSRF token) is sometimes correctly non-HttpOnly, so that's a human call.
+- `scripts/privacy.mjs <url>` — the Privacy check on its own: third-party script/iframe origins the
+  page loads, labeled against a list of known analytics/ad/tracking services, plus whether a privacy
+  policy link is present. An unrecognized third party (a CDN, a webfont host) is listed, not flagged —
+  only a known tracker with no privacy policy link becomes a finding.
 - `scripts/media.mjs <url>` — finds `<video>`/`<source>` tags pointing at local video files and
   reports their real size. Not a stock Lighthouse audit, but a heavy hero/background video is
   routinely the single biggest thing on a page — bigger than any image.
