@@ -8,24 +8,44 @@ what to fix. Works with your terminal or AI coding assistant. Free and open, fro
 
 | Use it as… | For whom |
 |---|---|
-| **A command** — `npx precheck <check> <url>` | Anyone. No AI, no account. |
+| **A command** — `precheck <check> <url>` | Anyone. No AI, no account. |
 | **Claude skills** — drop into `~/.claude/skills/` | Claude Code users |
 | **An MCP server** — any agent calls the checks live | Any MCP-capable AI (incl. ChatGPT) |
-| **A Custom GPT** | ChatGPT users |
+| **A Custom GPT** or **Gemini Gem** | ChatGPT and Gemini users |
 
-The same checks underneath (`lib/`); four ways to run them. You don't need to use Claude, or any AI
+The same checks underneath (`lib/`); five ways to run them. You don't need to use Claude, or any AI
 at all.
 
-## Run a skill from the command line (works for everyone)
+## Run the checks from the command line (works for everyone)
+
+Install it straight from this repo (Node 18+):
 
 ```bash
-npx precheck headers    https://example.com     # security headers: present vs missing
-npx precheck lighthouse https://example.com     # performance + LCP breakdown + what to fix
-npx precheck a11y       https://example.com     # accessibility (WCAG 2.1 AA) via axe-core
-npx precheck sitemap --dir ./build --base https://example.com   # sitemap.xml + robots.txt + llms.txt
+npm install -g github:amandamalavedev/website-precheck
 ```
 
-- `headers` and `sitemap` are pure Node — no browser, no external install.
+…or run any check without installing: `npx github:amandamalavedev/website-precheck headers https://example.com`.
+
+> It isn't on the npm registry yet. **Don't run `npx precheck`** — that name isn't ours, and if
+> someone else ever publishes a package called `precheck`, that command would run their code instead.
+> When this is published it will be under the scoped name `@amandamalavedev/precheck`.
+
+```bash
+precheck report     https://example.com --out ./report   # all six checks → one shareable HTML/JSON/MD report
+precheck headers    https://example.com     # security headers: present vs missing
+precheck cookies    https://example.com     # every cookie the site sets, flagged for missing Secure/SameSite
+precheck privacy    https://example.com     # third-party trackers, and whether a privacy policy is linked
+precheck lighthouse https://example.com     # performance (median of N runs) + LCP breakdown + what to fix
+precheck a11y       https://example.com     # accessibility (WCAG 2.1 AA) via axe-core
+precheck schema     https://example.com     # SEO: structured data (JSON-LD) found + how complete it is
+precheck media      https://example.com     # local <video> files over a size threshold
+precheck sitemap --dir ./build --base https://example.com   # generate sitemap.xml + robots.txt + llms.txt
+```
+
+The six checks in `report`: Security (headers), Governance (cookies), Privacy, Speed (Lighthouse),
+Accessibility, SEO (structured data).
+
+- `headers`, `cookies`, `privacy`, `schema`, `media` and `sitemap` are pure Node — no browser, no external install.
 - `lighthouse` uses `npx lighthouse@12` under the hood (needs Chrome).
 - The IP/SSRF classifier is a vendored copy of [`ipaddr.js`](https://github.com/whitequark/ipaddr.js)
   (MIT) bundled with the scripts — nothing extra to install.
@@ -44,13 +64,18 @@ No model, no account, no telemetry — it just runs the check and prints what to
 ## Use them as Claude skills
 
 The command tells you *what's* wrong; the Claude skill teaches Claude *how to fix it* — the full
-method, not just a score. Copy the ones you want:
+method, not just a score. Install all five (or keep only the ones you want):
 
 ```bash
 git clone https://github.com/amandamalavedev/website-precheck.git
-cp -r website-precheck/site-hardening-and-speed  ~/.claude/skills/
-# …and any others
+cd website-precheck
+for s in site-hardening-and-speed site-admin-panel seo-geo-schema analytics-and-search-console accessibility-launch-readiness; do
+  cp -r "$s" ~/.claude/skills/
+done
 ```
+
+To update later: `git pull` in the clone and run the same loop again — it copies the new version of
+every file over the old one.
 
 | Skill | What it does |
 |---|---|
@@ -63,12 +88,15 @@ cp -r website-precheck/site-hardening-and-speed  ~/.claude/skills/
 Then just ask Claude to harden a site, run Lighthouse, add schema, or do a launch review — the
 matching skill loads itself.
 
-## Use them from any agent (MCP) or from ChatGPT
+## Use them from any agent (MCP), ChatGPT or Gemini
 
 - **MCP server** ([`mcp/`](./mcp)) — exposes the checks as tools any MCP-capable agent can call live.
   One command adds it to Claude Code; see [mcp/README.md](./mcp/README.md).
 - **Custom GPT kit** ([`gpt/`](./gpt)) — the instructions to paste into ChatGPT's builder so a Custom
   GPT uses the same method.
+- **Gemini Gem kit** ([`gemini/`](./gemini)) — the same, for Gemini's Gem manager.
+- The GPT and the Gem give the *method* only; they don't run the real checks unless you connect them
+  to the command or the MCP server (each kit explains how).
 
 ## Two ideas run through all of it
 

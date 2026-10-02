@@ -112,8 +112,9 @@ export async function checkA11y(rawUrl, { wait = 2000, full = false, allowPrivat
 const isMain = (() => { try { return import.meta.url === pathToFileURL(process.argv[1] || "").href; } catch { return false; } })();
 if (isMain) {
   const args = process.argv.slice(2);
-  const rawUrl = args.find((a) => /^https?:\/\//.test(a));
+  const rawUrl = args.find((a) => /^[a-z][a-z0-9+.-]+:\/\//i.test(a));
   if (!rawUrl) { console.error("Usage: node a11y-check.mjs <url> [--wait 2000] [--full] [--allow-private]"); process.exit(2); }
+  if (!/^https?:\/\//i.test(rawUrl)) { console.error(`Refused: only http:// and https:// URLs can be checked (got "${rawUrl.split(':')[0]}:").`); process.exit(2); }
   const waitIdx = args.indexOf("--wait");
   const wait = waitIdx >= 0 && args[waitIdx + 1] ? Number(args[waitIdx + 1]) : 2000;
   const full = args.includes("--full");

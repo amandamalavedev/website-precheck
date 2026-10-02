@@ -4,13 +4,13 @@ A Gem can't be shipped as a file; you build it in Gemini's **Gem manager** (gemi
 Explore Gems → New Gem). This kit is everything to paste in. Like the Custom GPT kit it mirrors, it
 gives the Gem the *method* (the knowledge) — it does **not** make the Gem actually run Lighthouse,
 axe-core, or the header/cookie/privacy/schema checks. Those only run for real via the CLI
-(`npx precheck ...`) or the MCP server. See "Adding live checks" at the bottom before claiming this
+(`precheck ...`) or the MCP server. See "Adding live checks" at the bottom before claiming this
 Gem "runs the checks."
 
 **Honesty note, carried over from the ChatGPT kit:** a Gem given only the instructions below will
 reason about your site and can use whatever browsing capability Gemini grants it, but it is not
 calling `lib/lighthouse.mjs` or `lib/schema.mjs` — it's giving you its best judgment, not a
-measurement. Don't present this Gem as equivalent to running `npx precheck report <url>`; it isn't,
+measurement. Don't present this Gem as equivalent to running `precheck report <url>`; it isn't,
 until the "Adding live checks" step is actually done.
 
 I haven't tested this inside Gemini's own Gem builder — I don't have access to run that UI myself.

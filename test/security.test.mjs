@@ -361,3 +361,35 @@ test("F9 regression: a valid block in an oversized response is still found, boun
     assert.ok(elapsed < 3000, `took ${elapsed}ms on a 6MB body — the read cap isn't bounding the download`);
   } finally { server.close(); }
 });
+
+// ── F10: non-web URLs get a plain refusal, not a confusing usage line (found 2026-10-02) ─────────────
+test("F10 abuse: file:// and ftp:// URLs are refused with a clear message by every check", () => {
+  for (const cmd of ["headers", "cookies", "privacy", "media", "schema"]) {
+    for (const bad of ["file:///etc/passwd", "ftp://example.com/"]) {
+      const r = spawnSync(process.execPath, [WG, cmd, bad], { encoding: "utf8" });
+      assert.equal(r.status, 2, `${cmd} ${bad} should exit 2`);
+      assert.match(r.stderr, /Refused: only http:\/\/ and https:\/\/ URLs/, `${cmd} ${bad}: ${r.stderr}`);
+    }
+  }
+});
+test("F10 control: a Windows path argument is not mistaken for a URL", () => {
+  const r = spawnSync(process.execPath, [WG, "headers", "C:\\out"], { encoding: "utf8" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /Usage:/);
+});
+
+// ── F11: the skills ship physical copies of lib/ — they must never drift from it (found 2026-10-02) ──
+test("F11: every script a skill shares with lib/ is byte-identical to lib/", async () => {
+  const { readdirSync, existsSync } = await import("node:fs");
+  const root = join(HERE, "..");
+  const drift = [];
+  for (const skill of readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory())) {
+    const dir = join(root, skill.name, "scripts");
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir)) {
+      const twin = join(root, "lib", f);
+      if (existsSync(twin) && readFileSync(twin, "utf8") !== readFileSync(join(dir, f), "utf8")) drift.push(`${skill.name}/scripts/${f}`);
+    }
+  }
+  assert.deepEqual(drift, [], "copy lib/ into these after changing it: " + drift.join(", "));
+});
