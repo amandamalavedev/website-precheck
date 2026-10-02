@@ -410,3 +410,24 @@ test("F12: the HTML report names the assessed site in its header, escaped", asyn
   const out = toHTML(evil);
   assert.ok(!out.includes("<script>alert(1)</script>"), "URL must be HTML-escaped");
 });
+
+// ── F13: "Fix this first" ranks by real impact, not by which check ran first (found 2026-10-02) ──────
+test("F13: a 'serious' accessibility issue no longer outranks security; ties go Security first", async () => {
+  const { rankFindings } = await import("../lib/report.mjs");
+  const ranked = rankFindings([
+    { severity: "medium", category: "Accessibility", title: "Low colour contrast (axe: serious)" },
+    { severity: "medium", category: "Speed", title: "Render-blocking CSS" },
+    { severity: "medium", category: "Security", title: "Missing X-Frame-Options" },
+    { severity: "low", category: "Security", title: "Server header" },
+    { severity: "high", category: "Security", title: "Missing CSP" },
+  ]).map((f) => f.title);
+  assert.deepEqual(ranked, ["Missing CSP", "Missing X-Frame-Options", "Low colour contrast (axe: serious)", "Render-blocking CSS", "Server header"]);
+});
+test("F13 control: a truly critical accessibility blocker still ranks above a medium security gap", async () => {
+  const { rankFindings } = await import("../lib/report.mjs");
+  const ranked = rankFindings([
+    { severity: "medium", category: "Security", title: "Missing X-Frame-Options" },
+    { severity: "high", category: "Accessibility", title: "Button unreachable by keyboard (axe: critical)" },
+  ]).map((f) => f.title);
+  assert.equal(ranked[0], "Button unreachable by keyboard (axe: critical)");
+});

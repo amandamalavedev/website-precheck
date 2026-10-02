@@ -18,7 +18,21 @@ import { checkSchema } from "./schema.mjs";
 
 const SEV_RANK = { high: 0, medium: 1, low: 2 };
 const SEV_LABEL = { high: "High", medium: "Medium", low: "Low" };
-const IMPACT_TO_SEV = { critical: "high", serious: "high", moderate: "medium", minor: "low" };
+// axe-core impact → our severity. Only "critical" (blocks a disabled visitor outright — e.g. a control
+// that can't be reached by keyboard) is High. "serious" (e.g. low colour contrast) used to map to High
+// too, which put a contrast nit at the top of "Fix this first", above real security gaps (2026-10-02).
+const IMPACT_TO_SEV = { critical: "high", serious: "medium", moderate: "low", minor: "low" };
+// Tie-break within a severity: what can hurt visitors or the owner most comes first. Without it, ties
+// fell in whatever order the checks happened to run.
+const CATEGORY_RANK = { Security: 0, Privacy: 1, Governance: 2, Accessibility: 3, Speed: 4, SEO: 5 };
+/** Order findings for "Fix this first": severity, then category, then how much of the page it affects. */
+export function rankFindings(findings) {
+  const reach = (f) => (f.count || 0) + (f.urls?.length || 0) + (f.savingMs ? f.savingMs / 100 : 0);
+  return findings.sort((a, b) =>
+    (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9)
+    || (CATEGORY_RANK[a.category] ?? 9) - (CATEGORY_RANK[b.category] ?? 9)
+    || reach(b) - reach(a));
+}
 
 // ---- Plain-English translation layer. A scanner that prints `MISS permissions-policy` and leaves
 // you to Google it is only useful to someone who already knows what that means. Every finding gets
@@ -407,7 +421,7 @@ export async function runReport(rawUrl, {
   findings.length = 0;
   findings.push(...deduped);
 
-  findings.sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity]);
+  rankFindings(findings);
   const counts = { high: findings.filter((f) => f.severity === "high").length, medium: findings.filter((f) => f.severity === "medium").length, low: findings.filter((f) => f.severity === "low").length };
   const verdict = counts.high > 0 ? "urgent" : counts.medium > 0 ? "attention" : "good";
 
@@ -901,6 +915,20 @@ if (isMain) {
   catch (e) { console.error("Could not write report: " + e.message); process.exit(1); }
 
   console.log(toMarkdown(report));
-  console.log(`\nWrote:\n  ${files.json}\n  ${files.html}\n  ${files.md}`);
+  // Full locations, not paths relative to wherever the command happened to run — people couldn't
+  // tell where the report went or how to open it (2026-10-02).
+  const abs = (p) => resolve(p);
+  console.log(`
+────────────────────────────────────────────────────────────
+  Your report is ready.
+
+  See the full report — paste this into your browser's address bar:
+    ${pathToFileURL(abs(files.html)).href}
+
+  Or open this folder and double-click precheck-report.html:
+    ${resolve(outDir)}
+
+  Also saved (same folder): precheck-report.md (text) · precheck-report.json (data)
+────────────────────────────────────────────────────────────`);
   process.exitCode = Math.min(report.counts.high, 250);
 }
