@@ -1,6 +1,6 @@
 {
   "name": "@amandamalavedev/precheck",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Check your website before you launch — test speed, accessibility, and security headers, generate essential SEO files, and get guidance on what to fix. Works with your terminal or AI coding assistant.",
   "type": "module",
   "bin": {
@@ -48,6 +48,6 @@
   "homepage": "https://github.com/amandamalavedev/website-precheck",
   "repository": {
     "type": "git",
-    "url": "https://github.com/amandamalavedev/website-precheck.git"
+    "url": "git+https://github.com/amandamalavedev/website-precheck.git"
   }
 }

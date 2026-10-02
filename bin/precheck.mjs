@@ -34,8 +34,8 @@ const [cmd, ...rest] = process.argv.slice(2);
 if (!cmd || cmd === "help" || cmd === "-h" || cmd === "--help") {
   console.log(`\nprecheck — free website checks\n`);
   for (const [name, { blurb }] of Object.entries(COMMANDS)) console.log(`  precheck ${name.padEnd(11)} ${blurb}`);
-  console.log(`\nInstall once:  npm install -g github:amandamalavedev/website-precheck
-(or run without installing:  npx github:amandamalavedev/website-precheck <command> <url>)
+  console.log(`\nInstall once:  npm install -g @amandamalavedev/precheck
+(or run without installing:  npx @amandamalavedev/precheck <command> <url>)
 
 Examples:
   precheck report https://example.com --out ./report

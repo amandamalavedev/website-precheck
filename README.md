@@ -18,17 +18,22 @@ at all.
 
 ## Run the checks from the command line (works for everyone)
 
-Install it straight from this repo (Node 18+):
+Run any check without installing (Node 18+):
 
 ```bash
-npm install -g github:amandamalavedev/website-precheck
+npx @amandamalavedev/precheck headers https://example.com
 ```
 
-…or run any check without installing: `npx github:amandamalavedev/website-precheck headers https://example.com`.
+…or install it once and use the short `precheck` command:
 
-> It isn't on the npm registry yet. **Don't run `npx precheck`** — that name isn't ours, and if
-> someone else ever publishes a package called `precheck`, that command would run their code instead.
-> When this is published it will be under the scoped name `@amandamalavedev/precheck`.
+```bash
+npm install -g @amandamalavedev/precheck
+```
+
+> **Always use the full name `@amandamalavedev/precheck`.** Plain `npx precheck` is a different,
+> unrelated name on npm — if anyone ever publishes a package called `precheck`, that command would
+> run their code, not this. (You can also install straight from this repo:
+> `npm install -g github:amandamalavedev/website-precheck`.)
 
 ```bash
 precheck report     https://example.com --out ./report   # all six checks → one shareable HTML/JSON/MD report
