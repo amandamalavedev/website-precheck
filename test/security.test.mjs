@@ -431,3 +431,38 @@ test("F13 control: a truly critical accessibility blocker still ranks above a me
   ]).map((f) => f.title);
   assert.equal(ranked[0], "Button unreachable by keyboard (axe: critical)");
 });
+
+// ── F14: site-specific fixes (2026-10-02: "it provides generic fixes") ───────────────────────────────
+test("F14: CSP is built from what the page loads; inline scripts get their exact sha256", async () => {
+  const { profileFromHtml, buildCsp } = await import("../lib/specifics.mjs");
+  const html = `<html lang="en"><head><title>Acme &amp; Co · Widgets for everyone</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">
+    <script src="https://cdn.example.net/lib.js"></script><script>console.log(1)</script></head>
+    <body><img src="https://img.example.org/a.png"><button onclick="go()">Go</button></body></html>`;
+  const p = profileFromHtml(html, "https://acme.test/");
+  const csp = buildCsp(p).value;
+  assert.match(csp, /script-src 'self' https:\/\/cdn\.example\.net 'sha256-[A-Za-z0-9+/=]+'/);
+  assert.match(csp, /font-src 'self' https:\/\/fonts\.gstatic\.com/);
+  assert.match(csp, /style-src 'self' https:\/\/fonts\.googleapis\.com/);
+  assert.match(csp, /img-src 'self' data: https:\/\/img\.example\.org/);
+  assert.equal(p.inlineHandlers.length, 1, "inline onclick handler is reported (a CSP would block it)");
+  assert.deepEqual(p.scriptsWithoutSri, ["https://cdn.example.net/lib.js"]);
+});
+test("F14: host detection drives the fix format (Netlify → _headers, nginx → add_header)", async () => {
+  const { detectPlatform, headerFixFor, headerValues } = await import("../lib/specifics.mjs");
+  const pairs = headerValues(["x-frame-options", "referrer-policy"], "default-src 'self'");
+  const netlify = headerFixFor(detectPlatform({ server: "Netlify" }), pairs);
+  assert.match(netlify.where, /_headers/);
+  assert.equal(netlify.code, "/*\n  X-Frame-Options: SAMEORIGIN\n  Referrer-Policy: strict-origin-when-cross-origin");
+  const nginx = headerFixFor(detectPlatform({ server: "nginx/1.25" }), pairs);
+  assert.match(nginx.code, /^add_header X-Frame-Options "SAMEORIGIN" always;/);
+  assert.equal(detectPlatform({ "x-vercel-id": "x" }).id, "vercel");
+});
+test("F14: contrast fix returns a colour that actually passes; schema name is clean", async () => {
+  const { contrastFix, contrastRatio, profileFromHtml, schemaFor } = await import("../lib/specifics.mjs");
+  const fix = contrastFix("#999999", "#ffffff", 4.5);
+  const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  assert.ok(contrastRatio(rgb(fix.color), [255, 255, 255]) >= 4.5, `${fix.color} must reach 4.5:1`);
+  const p = profileFromHtml(`<title>Acme &amp; Co · Widgets for everyone</title><meta name="description" content="We make widgets.">`, "https://acme.test/");
+  assert.match(schemaFor(p).code, /"name": "Acme & Co"/);
+});

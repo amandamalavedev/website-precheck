@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // precheck CLI — free website checks any project can run, no AI model required.
-//   precheck report     <url> [--out dir] [--brand-name ...]   — all six checks, one HTML/JSON/MD report
+//   precheck report     <url> [--out dir] [--brand-name ...]   — all seven checks, one HTML/JSON/MD report
 //   precheck lighthouse <url> [--runs 3] [--form mobile|desktop]
 //   precheck a11y       <url> [--wait 2000] [--full]
 //   precheck headers    <url>
@@ -8,6 +8,7 @@
 //   precheck privacy    <url>
 //   precheck media      <url>
 //   precheck schema     <url>
+//   precheck mobile     <url>
 //   precheck sitemap    --dir ./build --base https://example.com [--out ./build]
 // Each command just runs the matching check in lib/ and forwards your flags.
 import { spawn } from "node:child_process";
@@ -18,14 +19,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 const lib = (f) => join(here, "..", "lib", f);
 
 const COMMANDS = {
-  report:     { file: "report.mjs",     blurb: "All six checks in one go — Security, Governance, Privacy, Speed, Accessibility, SEO — as a shareable HTML/JSON/MD report" },
+  report:     { file: "report.mjs",     blurb: "All seven checks in one go — Security (incl. a full security checklist), Governance, Privacy, Speed, Accessibility, Mobile, Schema — as a shareable HTML/JSON/MD report" },
   lighthouse: { file: "lighthouse.mjs", blurb: "Lighthouse performance (median of N runs) + LCP breakdown + failing audits" },
   a11y:       { file: "a11y.mjs",       blurb: "WCAG 2.1 AA check via axe-core (needs puppeteer-core + Chrome)" },
   headers:    { file: "headers.mjs",    blurb: "HTTP security headers: what's present, what's missing" },
   cookies:    { file: "cookies.mjs",    blurb: "Governance: every cookie the site sets, flagged for missing Secure/SameSite" },
   privacy:    { file: "privacy.mjs",    blurb: "Privacy: third-party trackers the page loads, and whether a privacy policy is linked" },
   media:      { file: "media.mjs",      blurb: "Finds local <video> sources over a size threshold" },
-  schema:     { file: "schema.mjs",     blurb: "SEO: finds structured data (JSON-LD) and scores how complete it is" },
+  schema:     { file: "schema.mjs",     blurb: "Schema: finds structured data (JSON-LD) and scores how complete it is" },
+  mobile:     { file: "mobile.mjs",     blurb: "Mobile ready: viewport, sideways scrolling, tap-target size, text size — on a phone-sized screen (needs Chrome)" },
   sitemap:    { file: "sitemap.mjs",    blurb: "Generate sitemap.xml + robots.txt + llms.txt for a built site" },
 };
 

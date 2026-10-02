@@ -15,6 +15,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { checkHeaders } from "../lib/headers.mjs";
+import { checkMobile } from "../lib/mobile.mjs";
+import { detectPlatform, readPageProfile, securityChecklist } from "../lib/specifics.mjs";
 import { checkA11y } from "../lib/a11y.mjs";
 import { runLighthouse } from "../lib/lighthouse.mjs";
 import { checkCookies } from "../lib/cookies.mjs";
@@ -59,7 +61,7 @@ const server = new McpServer({ name: "precheck", version: "0.1.0" });
 const SCOPE = " Only for sites you own or are authorized to test (not arbitrary URLs); refuses private/internal/metadata addresses by default (set allowPrivate for a trusted local site). Residual risks in SECURITY.md.";
 
 server.registerTool("precheck_report",
-  { title: "Full precheck report", description: "Run all six checks in one go — Security, Governance, Privacy, Speed, Accessibility, SEO — and return the combined structured result: findings with a plain-English why/fix and, where one can be generated, the actual code to fix it on this site (not generic advice)." + SCOPE,
+  { title: "Full precheck report", description: "Run all seven checks in one go — Security (with the full security checklist), Governance, Privacy, Speed, Accessibility, Mobile, Schema — and return the combined structured result: findings with a plain-English why/fix and, where one can be generated, the actual code to fix it on this site (not generic advice)." + SCOPE,
     inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional(), skipLighthouse: z.boolean().optional(), skipA11y: z.boolean().optional(), skipCookies: z.boolean().optional(), skipVideo: z.boolean().optional(), skipPrivacy: z.boolean().optional(), skipSchema: z.boolean().optional() } },
   guarded(({ url, allowPrivate, skipLighthouse, skipA11y, skipCookies, skipVideo, skipPrivacy, skipSchema }) =>
     runReport(url, { allowPrivate, skipLighthouse, skipA11y, skipCookies, skipVideo, skipPrivacy, skipSchema })));
@@ -95,9 +97,27 @@ server.registerTool("check_video_weight",
   guarded(({ url, allowPrivate, thresholdKiB }) => checkVideoAssets(url, { allowPrivate, thresholdKiB })));
 
 server.registerTool("check_schema",
-  { title: "Check structured data (SEO)", description: "Find every JSON-LD (<script type=\"application/ld+json\">) block on a page, identify each object's @type, and score it against a baseline set of recommended properties for that type. Flags malformed JSON-LD (invalid JSON is silently ignored by search engines, so a broken block looks present but contributes nothing)." + SCOPE,
+  { title: "Check structured data (Schema)", description: "Find every JSON-LD (<script type=\"application/ld+json\">) block on a page, identify each object's @type, and score it against a baseline set of recommended properties for that type. Flags malformed JSON-LD (invalid JSON is silently ignored by search engines, so a broken block looks present but contributes nothing)." + SCOPE,
     inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional() } },
   guarded(({ url, allowPrivate }) => checkSchema(url, { allowPrivate })));
+
+server.registerTool("check_mobile",
+  { title: "Check mobile readiness", description: "Load the page on a 390×844 phone screen and check the mobile viewport tag, sideways scrolling (with the elements that stick out), tap targets under 24×24px and text under 12px — each with the exact element. Needs Chrome + puppeteer-core.",
+    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional() } },
+  guarded(({ url, allowPrivate }) => checkMobile(url, { allowPrivate })));
+
+server.registerTool("check_security",
+  { title: "Security checklist", description: "The full outside-in security checklist: HTTPS + redirect, HSTS, Content-Security-Policy (with a policy built from what the page loads), clickjacking, nosniff, Referrer/Permissions-Policy, software disclosure, cookies, mixed content, SRI, exposed .git/.env, public source maps, API keys/passwords/emails inside the site's scripts, downloadable server files, security.txt, trackers and privacy link. Every fail/warn includes where the fix goes on this site's host and what to paste.",
+    inputSchema: { url: z.string().url(), allowPrivate: z.boolean().optional() } },
+  guarded(async ({ url, allowPrivate }) => {
+    const headers = await checkHeaders(url, { allowPrivate });
+    const [cookies, privacy, profile] = await Promise.all([
+      checkCookies(url, { allowPrivate }).catch(() => null),
+      checkPrivacy(url, { allowPrivate }).catch(() => null),
+      readPageProfile(url, { allowPrivate }).catch(() => null),
+    ]);
+    return securityChecklist({ url, headers, cookies, privacy, profile, platform: detectPlatform(headers.responseHeaders), allowPrivate });
+  }));
 
 server.registerTool("generate_sitemap",
   { title: "Generate sitemap.xml", description: "Generate sitemap.xml (+ robots.txt and an llms.txt starter) for a built static site directory, under the given base URL. Writes only inside that directory; won't overwrite existing files unless overwrite is true.",

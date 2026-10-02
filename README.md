@@ -36,19 +36,31 @@ npm install -g @amandamalavedev/precheck
 > `npm install -g github:amandamalavedev/website-precheck`.)
 
 ```bash
-precheck report     https://example.com --out ./report   # all six checks → one shareable HTML/JSON/MD report
+precheck report     https://example.com --out ./report   # all seven checks → one shareable HTML/JSON/MD report
 precheck headers    https://example.com     # security headers: present vs missing
 precheck cookies    https://example.com     # every cookie the site sets, flagged for missing Secure/SameSite
 precheck privacy    https://example.com     # third-party trackers, and whether a privacy policy is linked
 precheck lighthouse https://example.com     # performance (median of N runs) + LCP breakdown + what to fix
 precheck a11y       https://example.com     # accessibility (WCAG 2.1 AA) via axe-core
-precheck schema     https://example.com     # SEO: structured data (JSON-LD) found + how complete it is
+precheck schema     https://example.com     # Schema: structured data (JSON-LD) found + how complete it is
+precheck mobile     https://example.com     # Mobile ready: viewport, sideways scroll, tap size, text size
 precheck media      https://example.com     # local <video> files over a size threshold
 precheck sitemap --dir ./build --base https://example.com   # generate sitemap.xml + robots.txt + llms.txt
 ```
 
-The six checks in `report`: Security (headers), Governance (cookies), Privacy, Speed (Lighthouse),
-Accessibility, SEO (structured data).
+The seven checks in `report`, each with its own score, an explanation of how that score is calculated,
+and the exact fix for every problem:
+
+- **Security** — a 20-point checklist: HTTPS, security headers, a Content-Security-Policy built from what
+  your page actually loads, clickjacking, insecure content, exposed `.git`/`.env`, public source maps,
+  API keys/passwords/emails inside your site's scripts, downloadable server files, `security.txt`.
+- **Governance** (cookies) · **Privacy** (third-party trackers) · **Speed** (Lighthouse, with every Core
+  Web Vital rated against Google's thresholds) · **Accessibility** (axe-core, each failing element with
+  its corrected markup or colour) · **Mobile** (phone-sized screen) · **Schema** (structured data, with a
+  ready-to-paste block filled in from your page).
+
+The report detects which host serves the site (Netlify, Vercel, Cloudflare, GitHub Pages, nginx, Apache,
+Express…) and writes every header fix in that host's own format — e.g. one `_headers` file for Netlify.
 
 - `headers`, `cookies`, `privacy`, `schema`, `media` and `sitemap` are pure Node — no browser, no external install.
 - `lighthouse` uses `npx lighthouse@12` under the hood (needs Chrome).

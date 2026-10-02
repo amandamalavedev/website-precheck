@@ -10,6 +10,8 @@ Exposes the free Website Precheck checks as tools any MCP-capable agent can call
 - `check_privacy` — third-party trackers the page loads.
 - `check_video_weight` — oversized video assets worth compressing.
 - `check_schema` — structured data (JSON-LD) found on the page and how complete it is.
+- `check_mobile` — phone-sized screen: viewport tag, sideways scrolling, tap targets under 24×24px, text under 12px, each with the exact element.
+- `check_security` — the full security checklist (HTTPS, headers, a CSP built from the page, exposed files, source maps, keys/passwords/emails in scripts, server files, security.txt…), every fail with the fix for this site's host.
 - `generate_sitemap` — sitemap.xml + robots.txt + llms.txt for a built site.
 
 Same engine as the CLI (`../lib`), wrapped over stdio with the MCP SDK.
@@ -30,7 +32,7 @@ npm install puppeteer-core   # only if you want the accessibility tool
 ```
 
 `run_lighthouse` needs Chrome (it uses `npx lighthouse@12`). `check_accessibility` needs Chrome +
-`puppeteer-core`. `check_security_headers` and `generate_sitemap` need neither.
+`puppeteer-core`. `check_security_headers`, `check_security` and `generate_sitemap` need neither; `check_mobile` needs Chrome + `puppeteer-core` like `check_accessibility`.
 
 ## Add it to Claude Code
 

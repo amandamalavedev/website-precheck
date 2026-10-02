@@ -15,6 +15,8 @@ import { checkCookies } from "./cookies.mjs";
 import { checkVideoAssets } from "./media.mjs";
 import { checkPrivacy } from "./privacy.mjs";
 import { checkSchema } from "./schema.mjs";
+import { checkMobile } from "./mobile.mjs";
+import { detectPlatform, readPageProfile, buildCsp, schemaFor, contrastFix, securityChecklist } from "./specifics.mjs";
 
 const SEV_RANK = { high: 0, medium: 1, low: 2 };
 const SEV_LABEL = { high: "High", medium: "Medium", low: "Low" };
@@ -24,7 +26,22 @@ const SEV_LABEL = { high: "High", medium: "Medium", low: "Low" };
 const IMPACT_TO_SEV = { critical: "high", serious: "medium", moderate: "low", minor: "low" };
 // Tie-break within a severity: what can hurt visitors or the owner most comes first. Without it, ties
 // fell in whatever order the checks happened to run.
-const CATEGORY_RANK = { Security: 0, Privacy: 1, Governance: 2, Accessibility: 3, Speed: 4, SEO: 5 };
+// Checklist items whose failure is High (and costs 25 points): encryption, injection protection, and
+// anything that exposes code, keys or files. Other failures are Medium (10); warnings are Low (4).
+const CRITICAL_CHECKS = new Set(["https", "http-redirect", "csp", "exposed-files", "mixed-content", "secrets-in-code", "source-maps", "server-files"]);
+// How each failed/warned checklist item reads as an ISSUE (the checklist itself states the goal).
+const CHECK_PROBLEM = {
+  https: "The site isn't served over HTTPS", "http-redirect": "Plain http:// doesn't redirect to https://",
+  hsts: "Browsers aren't told to always use HTTPS (HSTS)", csp: "No Content-Security-Policy — an injected script could run freely",
+  clickjacking: "Other sites can load your pages in a hidden frame (clickjacking)", nosniff: "Browsers are allowed to guess file types (X-Content-Type-Options missing)",
+  referrer: "Full page addresses leak to the sites you link to (Referrer-Policy missing)", permissions: "Camera, microphone and location aren't switched off (Permissions-Policy missing)",
+  disclosure: "The server advertises its software", "mixed-content": "Some files load over unencrypted http://",
+  sri: "Scripts from other sites have no tamper-proof fingerprint (SRI)", "exposed-files": "Secret files (.git / .env) can be downloaded",
+  "source-maps": "Your original source code can be downloaded (source maps)", "secrets-in-code": "API keys, tokens or passwords are visible in your site's code",
+  "emails-in-code": "Staff email addresses are visible in your site's scripts", "server-files": "Server code or config files can be downloaded",
+  "security-txt": "No security contact published (security.txt)",
+};
+const CATEGORY_RANK = { Security: 0, Privacy: 1, Governance: 2, Accessibility: 3, Mobile: 4, Speed: 5, Schema: 6 };
 /** Order findings for "Fix this first": severity, then category, then how much of the page it affects. */
 export function rankFindings(findings) {
   const reach = (f) => (f.count || 0) + (f.urls?.length || 0) + (f.savingMs ? f.savingMs / 100 : 0);
@@ -144,6 +161,42 @@ function translateFinding(key, f) {
 // running checks instead of just reading a static checklist. ----
 function siteRelative(u) { try { return new URL(u).pathname.replace(/^\//, ""); } catch { return String(u); } }
 
+/** The corrected markup or CSS for ONE failing accessibility element (null when there's no safe
+ *  mechanical fix — then the card shows axe's own reason for that element instead). */
+function a11yFixFor(ruleId, node, profile) {
+  const html = node.html || "";
+  const addAttr = (attr) => html.replace(/^<(\w+)/, `<$1 ${attr}`);
+  switch (ruleId) {
+    case "image-alt": case "input-image-alt": case "role-img-alt": case "svg-img-alt":
+      return `${addAttr('alt="Describe what this image shows"')}\n<!-- purely decorative image? use alt="" instead -->`;
+    case "html-has-lang": case "html-lang-valid": case "html-xml-lang-mismatch":
+      return `<html lang="${(profile?.lang && /^[a-z]{2}(-[A-Za-z]{2})?$/.test(profile.lang)) ? profile.lang : "en"}">`;
+    case "color-contrast": case "color-contrast-enhanced": {
+      const c = node.contrast;
+      if (!c) return null;
+      const fix = contrastFix(c.fg, c.bg, c.required || 4.5);
+      if (!fix) return null;
+      return `${node.target} { color: ${fix.color}; }\n/* now ${c.fg} on ${c.bg} = ${c.ratio}:1, needs ${c.required}:1 → ${fix.color} gives ${fix.ratio}:1 */`;
+    }
+    case "link-name":
+      return addAttr('aria-label="Where this link goes"');
+    case "button-name":
+      return addAttr('aria-label="What this button does"');
+    case "label": case "select-name": {
+      const id = /\bid="([^"]+)"/.exec(html)?.[1];
+      return id ? `<label for="${id}">Name of this field</label>\n${html}` : `<label>Name of this field\n  ${html}\n</label>`;
+    }
+    case "document-title":
+      return `<title>${profile?.meta?.title || "Page name — Site name"}</title>`;
+    case "meta-viewport": case "meta-viewport-large":
+      return `<meta name="viewport" content="width=device-width, initial-scale=1">`;
+    case "frame-title":
+      return addAttr('title="What this embedded content is"');
+    default:
+      return null;
+  }
+}
+
 function generateCode(f, siteUrl) {
   const files = (f.urls || []).map(siteRelative);
   const file = files[0] || null;
@@ -180,10 +233,24 @@ function generateCode(f, siteUrl) {
       if (!files.length) return null;
       return files.map((u) => `npx @squoosh/cli --webp '{"quality":80}' "${u}"`).join("\n")
         + `\n\n# Or drag-and-drop: squoosh.app / tinypng.com (TinyPNG also handles JPEG, despite the name).`;
-    case "lh:uses-responsive-images":
+    case "lh:uses-responsive-images": {
       if (!file) return null;
-      return files.map((u) => `npx @squoosh/cli --resize '{"width":800}' --webp '{"quality":80}' "${u}"`).join("\n")
-        + `\n\n<!-- then serve the right one per screen: -->\n<img srcset="${file.replace(/\.\w+$/, "")}-800.webp 800w, ${file} 1600w" sizes="(max-width: 600px) 100vw, 800px" src="${file}" alt="">`;
+      // Work out the width to resize to from Lighthouse's own numbers: bytes scale roughly with area, so the
+      // displayed width ≈ original × √(kept ÷ total); doubled for sharp phone screens, rounded up to 50px.
+      const kib = (b) => `${Math.round(b / 1024)} KiB`;
+      const rows = (f.items || []).filter((it) => it.url).slice(0, 3);
+      if (!rows.length) rows.push({ url: f.urls[0] });
+      const lines = rows.map((it) => {
+        const name = siteRelative(it.url);
+        const keep = it.totalBytes && it.wastedBytes ? Math.max(0.04, (it.totalBytes - it.wastedBytes) / it.totalBytes) : null;
+        const width = f.lcpWidth && keep ? Math.min(f.lcpWidth, Math.max(200, Math.ceil((f.lcpWidth * Math.sqrt(keep) * 2) / 50) * 50)) : 800;
+        const out = name.replace(/\.\w+$/, `-${width}.webp`);
+        return `# ${name}: ${it.totalBytes ? kib(it.totalBytes) : "?"} now${it.wastedBytes ? `, ${kib(it.wastedBytes)} of it never shown at the size it's displayed` : ""}\n`
+          + `npx @squoosh/cli --resize '{"width":${width}}' --webp '{"quality":80}' -s "-${width}" "${name}"\n`
+          + `<!-- then: --> <img src="${out}" srcset="${out} ${width}w, ${name} ${f.lcpWidth || 1600}w" sizes="(max-width: 600px) 100vw, ${Math.round(width / 2)}px" alt="…">`;
+      });
+      return lines.join("\n\n");
+    }
     case "lh:unminified-css":
       if (!files.length) return null;
       return files.map((u) => `npx lightningcss-cli --minify "${u}" -o "${u.replace(/\.css$/, ".min.css")}"`).join("\n");
@@ -222,7 +289,7 @@ function generateCode(f, siteUrl) {
 // ---- Run every check that succeeds; a failed optional check becomes a "skipped" note, not a crash
 // for the whole report — a site with no Chrome available should still get its header findings. ----
 export async function runReport(rawUrl, {
-  allowPrivate = false, skipLighthouse = false, skipA11y = false, skipCookies = false, skipVideo = false, skipPrivacy = false, skipSchema = false,
+  allowPrivate = false, skipLighthouse = false, skipA11y = false, skipCookies = false, skipVideo = false, skipPrivacy = false, skipSchema = false, skipMobile = false,
   lighthouseRuns = 3, lighthouseForm = "mobile", outDir = "lighthouse-reports", brand = null,
 } = {}) {
   const url = await assertSafeUrl(rawUrl, { allowPrivate }); // fail fast, before running anything
@@ -230,18 +297,16 @@ export async function runReport(rawUrl, {
   const skipped = [];
   const findings = [];
 
-  // ---- Security headers (always runs — fast, no browser needed) ----
-  let headers = null;
+  // ---- Security headers + which host serves the site + what the page loads. Security FINDINGS come from
+  // the security checklist further down (so the Security score, its ✓/✗ list and its fixes always agree),
+  // with every fix written for this host (a Netlify _headers file, vercel.json, nginx config…). ----
+  let headers = null, platform = { id: "unknown", name: "an unidentified host" }, profile = null;
   try {
     headers = await checkHeaders(url, { allowPrivate });
-    for (const c of headers.checks) {
-      if (!c.present) findings.push({ severity: c.severity, category: "Security", title: `Missing ${c.name} header`, label: HEADER_LABEL[c.name] || c.name, why: c.why, fix: `Add the \`${c.name}\` response header.`, meta: c.name, key: `header:${c.name}` });
-    }
-    for (const c of headers.unwanted) {
-      if (c.present) findings.push({ severity: "low", category: "Security", title: `${c.name} header reveals server details`, label: HEADER_LABEL[c.name] || c.name, why: c.why, fix: `Remove or blank the \`${c.name}\` header (e.g. \`app.disable('x-powered-by')\` in Express).`, meta: c.name, key: `unwanted:${c.name}` });
-    }
-    if (headers.httpsRedirect === false) findings.push({ severity: "high", category: "Security", title: "HTTP does not redirect to HTTPS", label: "Automatic HTTPS redirect", why: "Visitors on a plain http:// link stay unencrypted.", fix: "Redirect all HTTP traffic to HTTPS at the server or platform edge.", key: "https-redirect" });
+    platform = detectPlatform(headers.responseHeaders);
   } catch (e) { skipped.push({ check: "headers", reason: e.message }); }
+  try { profile = await readPageProfile(url, { allowPrivate }); }
+  catch (e) { skipped.push({ check: "page", reason: e.message }); }
 
   // ---- Lighthouse (slower — several Chrome launches) ----
   let lighthouse = null;
@@ -252,16 +317,19 @@ export async function runReport(rawUrl, {
       // snippet instead) — but the element's actual src is usually recoverable from the captured
       // LCP snippet (lighthouse.lcpElement), so pull it out rather than leaving the finding fileless.
       const lcpSrc = lighthouse.lcpElement && /\bsrc="([^"]+)"/.exec(lighthouse.lcpElement)?.[1];
+      const lcpWidth = lighthouse.lcpElement ? Number(/\bwidth="(\d+)"/.exec(lighthouse.lcpElement)?.[1]) || null : null;
       for (const f of lighthouse.failing) {
-        const extra = [f.metricSavingMs ? `~${f.metricSavingMs}ms metric saving` : "", f.bytes ? `~${Math.round(f.bytes / 1024)} KiB` : ""].filter(Boolean).join(", ");
+        const extra = [f.metricSavingMs ? `about ${f.metricSavingMs} ms faster` : "", f.bytes ? `about ${Math.round(f.bytes / 1024)} KiB smaller` : ""].filter(Boolean).join(", ");
         const urls = f.urls.length || !lcpSrc || !/lcp/.test(f.id) ? f.urls : [new URL(lcpSrc, url).href];
+        const items = (f.items || []).filter((it) => it.url || it.element);
         findings.push({
           severity: f.metricSavingMs > 500 || f.bytes > 100000 ? "high" : "medium", category: "Speed",
           title: f.title, label: f.title,
-          why: f.displayValue ? `Measured: ${f.displayValue}` : "Lighthouse flagged this as a performance opportunity.",
-          fix: extra ? `Potential improvement: ${extra}.` : "See the Lighthouse audit id for guidance.",
+          why: f.displayValue ? `Lighthouse measured: ${f.displayValue}.` : "Lighthouse flagged this as slowing the page down.",
+          fix: extra ? `Fixing it would make the page ${extra}.` : items.length ? "The exact files involved are listed below." : "Lighthouse didn't name a single file for this one — the full Lighthouse report (linked in the Speed section) shows the trace.",
           meta: f.id, key: `lh:${f.id}`,
-          urls, savingMs: f.metricSavingMs, savingKiB: f.bytes ? Math.round(f.bytes / 1024) : null,
+          urls, items, savingMs: f.metricSavingMs, savingKiB: f.bytes ? Math.round(f.bytes / 1024) : null,
+          lcpWidth: lcpSrc && urls.some((u) => u.endsWith(lcpSrc.split("/").pop())) ? lcpWidth : null,
         });
       }
     } catch (e) { skipped.push({ check: "lighthouse", reason: e.message }); }
@@ -273,10 +341,56 @@ export async function runReport(rawUrl, {
     try {
       a11y = await checkA11y(url, { allowPrivate });
       for (const v of a11y.violations) {
-        findings.push({ severity: IMPACT_TO_SEV[v.impact] || "medium", category: "Accessibility", title: v.help, label: v.help, why: v.description, fix: `See ${v.helpUrl} — affects ${v.count} element(s).`, meta: v.id, key: `a11y:${v.id}` });
+        const elements = v.nodes.map((n) => ({ ...n, fixed: a11yFixFor(v.id, n, profile) }));
+        findings.push({
+          severity: IMPACT_TO_SEV[v.impact] || "medium", category: "Accessibility", title: v.help, label: v.help, why: v.description,
+          fix: `Fix the ${v.count} element${v.count === 1 ? "" : "s"} listed below${v.count > elements.length ? ` (first ${elements.length} shown)` : ""}.`,
+          meta: v.id, key: `a11y:${v.id}`, elements, count: v.count, helpUrl: v.helpUrl, axeImpact: v.impact,
+        });
       }
     } catch (e) { skipped.push({ check: "a11y", reason: e.message }); }
   } else skipped.push({ check: "a11y", reason: "skipped by request" });
+
+  // ---- Mobile readiness: the page as a phone loads it (viewport, sideways scroll, tap size, text size) ----
+  let mobile = null;
+  if (!skipMobile) {
+    try {
+      mobile = await checkMobile(url, { allowPrivate });
+      const c = mobile.checks;
+      if (!c.viewport.ok) findings.push({
+        severity: c.viewport.value == null ? "high" : "medium", category: "Mobile", key: c.viewport.value == null ? "mobile:no-viewport" : "mobile:zoom-blocked",
+        title: c.viewport.value == null ? "No mobile viewport tag" : "Viewport blocks pinch-zoom",
+        why: c.viewport.value == null ? "Without it, phones draw the page at desktop width and shrink it, so everything is tiny." : `The viewport tag ("${c.viewport.value}") stops visitors zooming in — people with low vision rely on that.`,
+        fix: "Use the standard viewport tag in <head> on every page.",
+        where: "In the <head> of every page (replace the existing viewport tag if there is one):",
+        code: `<meta name="viewport" content="width=device-width, initial-scale=1">`,
+      });
+      if (!c.overflow.ok) findings.push({
+        severity: "high", category: "Mobile", key: "mobile:overflow", title: `Page scrolls sideways on a phone (${c.overflow.scrollWidth}px content on a ${c.overflow.screenWidth}px screen)`,
+        why: "Visitors have to drag left and right to read it — the most common reason a site 'feels broken' on a phone.",
+        fix: "Stop the listed elements growing wider than the screen.",
+        elements: c.overflow.elements.map((e) => ({ target: e.selector, html: e.html, summary: `${e.width}px wide, reaches ${e.right}px on a ${c.overflow.screenWidth}px screen`, fixed: `${e.selector} { max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere; }` })),
+        where: "Add to your main stylesheet (the rule for images/video/tables fixes most cases on its own):",
+        code: `img, video, iframe, table, pre { max-width: 100%; height: auto; }\n${c.overflow.elements.map((e) => `${e.selector} { max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere; }`).join("\n")}`,
+      });
+      if (!c.tap.ok) findings.push({
+        severity: "medium", category: "Mobile", key: "mobile:tap-targets", title: `${c.tap.small.length} button${c.tap.small.length === 1 ? "" : "s"}/link${c.tap.small.length === 1 ? "" : "s"} too small to tap reliably`,
+        why: "Targets under 24×24px get mis-tapped — the visitor hits the wrong link or nothing at all (WCAG 2.2 target size).",
+        fix: "Give each listed element at least 24×24px of tappable area (padding counts).",
+        elements: c.tap.small.map((e) => ({ target: e.selector, html: e.html, summary: `${e.w}×${e.h}px — needs at least 24×24px`, fixed: `${e.selector} { display: inline-block; min-width: 24px; min-height: 24px; padding: ${Math.max(0, Math.ceil((24 - e.h) / 2))}px ${Math.max(0, Math.ceil((24 - e.w) / 2))}px; }` })),
+        where: "Add to your main stylesheet:",
+        code: c.tap.small.map((e) => `${e.selector} { display: inline-block; min-width: 24px; min-height: 24px; padding: ${Math.max(0, Math.ceil((24 - e.h) / 2))}px ${Math.max(0, Math.ceil((24 - e.w) / 2))}px; }`).join("\n"),
+      });
+      if (!c.text.ok) findings.push({
+        severity: "low", category: "Mobile", key: "mobile:small-text", title: `${c.text.tiny.length} piece${c.text.tiny.length === 1 ? "" : "s"} of text smaller than 12px`,
+        why: "Text under 12px is hard to read on a phone without zooming, especially outdoors or for older visitors.",
+        fix: "Raise the listed text to at least 12px (14px or more for anything people need to read).",
+        elements: c.text.tiny.map((e) => ({ target: e.selector, html: `"${e.text}"`, summary: `${e.px}px`, fixed: `${e.selector} { font-size: 12px; }` })),
+        where: "Add to your main stylesheet:",
+        code: [...new Set(c.text.tiny.map((e) => `${e.selector} { font-size: 12px; } /* was ${e.px}px */`))].join("\n"),
+      });
+    } catch (e) { skipped.push({ check: "mobile", reason: e.message }); }
+  } else skipped.push({ check: "mobile", reason: "skipped by request" });
 
   // ---- Governance: what does this site actually set in the visitor's browser? ----
   let cookies = null;
@@ -355,25 +469,30 @@ export async function runReport(rawUrl, {
     } catch (e) { skipped.push({ check: "privacy", reason: e.message }); }
   } else skipped.push({ check: "privacy", reason: "skipped by request" });
 
-  // ---- SEO: structured data (schema.org/JSON-LD) — present, and actually filled in ----
+  // ---- Schema: structured data (schema.org/JSON-LD) — present, and actually filled in ----
   let schema = null;
   if (!skipSchema) {
     try {
       schema = await checkSchema(url, { allowPrivate });
       if (!schema.hasSchema) {
+        const gen = profile ? schemaFor(profile) : null;
         findings.push({
-          severity: "medium", category: "SEO", title: "No structured data (JSON-LD) found",
+          severity: "medium", category: "Schema", title: "No structured data (JSON-LD) found",
           label: "Structured data", why: "No <script type=\"application/ld+json\"> block was found on the page.",
-          fix: "Add JSON-LD structured data for the page's type (Organization, LocalBusiness, Article, etc.).",
+          fix: "Add the JSON-LD block below.",
           key: "schema:missing",
           plain: "This page has no structured data (schema.org/JSON-LD) at all.",
           impact: "Search engines and AI answer engines have nothing machine-readable to lift facts from — you're relying entirely on them parsing prose correctly, which they often don't.",
-          fixPlain: "Add a JSON-LD block for what this page actually is (Organization, LocalBusiness, Article, FAQPage, etc.).",
+          fixPlain: gen
+            ? `Paste the block below into your home page. It's already filled in from your page's own title, description, logo${gen.missing.length ? "" : " and social links"}${gen.missing.length ? ` — add ${gen.missing.join(", ")} yourself, the page didn't say` : ""}.`
+            : "Add a JSON-LD block for what this page actually is (Organization, LocalBusiness, Article, FAQPage, etc.).",
+          where: "Inside <head> on your home page (one per page; other pages can describe themselves, e.g. Article or Product). Check it afterwards at search.google.com/test/rich-results",
+          code: gen ? gen.code : null,
         });
       }
       if (schema.malformed > 0) {
         findings.push({
-          severity: "high", category: "SEO", title: `${schema.malformed} malformed JSON-LD block(s)`,
+          severity: "high", category: "Schema", title: `${schema.malformed} malformed JSON-LD block(s)`,
           label: "Structured data", why: "The content inside a <script type=\"application/ld+json\"> tag isn't valid JSON.",
           fix: "Fix the JSON syntax — validate with a JSON-LD linter before deploying.",
           key: "schema:malformed",
@@ -385,7 +504,7 @@ export async function runReport(rawUrl, {
       for (const b of schema.blocks) {
         if (b.recognized && b.score < 100) {
           findings.push({
-            severity: b.score < 50 ? "medium" : "low", category: "SEO", title: `${b.type} structured data is missing fields`,
+            severity: b.score < 50 ? "medium" : "low", category: "Schema", title: `${b.type} structured data is missing fields`,
             label: `Structured data: ${b.type}`, why: `Present: ${b.present.join(", ") || "(none)"}. Missing: ${b.missing.join(", ")}.`,
             fix: `Add ${b.missing.join(", ")} to the ${b.type} JSON-LD block.`,
             meta: b.type, key: `schema:incomplete:${b.type}`,
@@ -402,7 +521,27 @@ export async function runReport(rawUrl, {
   // renderers lead with; `title`/`why`/`fix` stay as the technical record underneath. Findings that
   // already set plain/impact/fixPlain directly (cookies, video) pass through unchanged, since the
   // fallback branch derives the same fields from title/why/fix.
-  for (const f of findings) Object.assign(f, translateFinding(f.key, f));
+  // ---- The security checklist (needs cookies + privacy, so it runs last). Its failed/warned SECURITY
+  // items become the Security findings — one source for the Security score, its ✓/✗ list and its fixes.
+  // Cookie and tracker items belong to the Governance and Privacy sections (which have their own findings).
+  let checklist = null;
+  try {
+    checklist = await securityChecklist({ url, headers, cookies, privacy, profile, platform, allowPrivate });
+    const SECTION_OF = { cookies: "Governance", trackers: "Privacy", "privacy-link": "Privacy" };
+    for (const i of checklist.items) i.section = SECTION_OF[i.id] || "Security";
+    for (const i of checklist.items) {
+      if (i.section !== "Security" || i.status === "pass") continue;
+      findings.push({
+        severity: i.status === "fail" ? (CRITICAL_CHECKS.has(i.id) ? "high" : "medium") : "low",
+        category: "Security", key: `check:${i.id}`, title: CHECK_PROBLEM[i.id] || i.label, label: i.label,
+        plain: CHECK_PROBLEM[i.id] || i.label, impact: i.detail, fixPlain: i.where || "", why: i.detail, fix: i.where || "",
+        where: i.where || null, code: i.code ?? null, checkStatus: i.status,
+      });
+    }
+  } catch (e) { skipped.push({ check: "checklist", reason: e.message }); }
+
+  // Fill in plain-English fields only where a finding hasn't already written its own.
+  for (const f of findings) { const t = translateFinding(f.key, f); for (const k of Object.keys(t)) if (f[k] == null || f[k] === "") f[k] = t[k]; }
   // Real, ready-to-paste code comes after translation so a dictionary hit's `tool` prose and the
   // generated code can sit side by side — code wins the spot in the card; tool text becomes context.
   for (const f of findings) if (f.code === undefined) f.code = generateCode(f, url);
@@ -425,27 +564,27 @@ export async function runReport(rawUrl, {
   const counts = { high: findings.filter((f) => f.severity === "high").length, medium: findings.filter((f) => f.severity === "medium").length, low: findings.filter((f) => f.severity === "low").length };
   const verdict = counts.high > 0 ? "urgent" : counts.medium > 0 ? "attention" : "good";
 
-  // One gauge per thing actually tested — Security / Governance / Privacy / Speed / Accessibility /
-  // SEO — not just a single Lighthouse score. Security/Governance/Privacy/Accessibility are a flat
-  // deduction from their own findings' severity; Speed uses Lighthouse's own calibrated score when
-  // it ran (the real, familiar number), falling back to the same deduction scheme when skipped; SEO
-  // uses the structured-data completeness score directly when schema was found (a real, specific
-  // measurement, not just "fewer findings = higher score").
+  // One score per section; how each is calculated is spelled out in the report (SCORE_METHOD) so the
+  // number is never a mystery. null = that check didn't run (shown as "not checked", never as 0 or 100).
   const SEV_WEIGHT = { high: 25, medium: 10, low: 4 };
   const deductionScore = (cat) => Math.max(0, 100 - findings.filter((f) => f.category === cat).reduce((sum, f) => sum + (SEV_WEIGHT[f.severity] || 0), 0));
+  const secItems = checklist ? checklist.items.filter((i) => i.section === "Security") : [];
   const categoryScores = {
-    Security: deductionScore("Security"),
-    Governance: deductionScore("Governance"),
-    Privacy: deductionScore("Privacy"),
-    Speed: lighthouse ? lighthouse.categoryScores.performance?.score ?? deductionScore("Speed") : deductionScore("Speed"),
-    Accessibility: deductionScore("Accessibility"),
-    SEO: schema ? (schema.overallScore ?? 0) : deductionScore("SEO"),
+    Security: checklist ? Math.max(0, 100 - secItems.reduce((s, i) => s + (i.status === "fail" ? (CRITICAL_CHECKS.has(i.id) ? 25 : 10) : i.status === "warn" ? 4 : 0), 0)) : (headers ? deductionScore("Security") : null),
+    Governance: cookies ? deductionScore("Governance") : null,
+    Privacy: privacy ? deductionScore("Privacy") : null,
+    Speed: lighthouse ? (lighthouse.categoryScores.performance?.score ?? null) : null,
+    Accessibility: a11y ? deductionScore("Accessibility") : null,
+    Mobile: mobile ? mobile.score : null,
+    Schema: schema ? (schema.overallScore ?? 0) : null,
   };
 
   return {
-    tool: "website-precheck", version: "0.1.0", url, startedAt, finishedAt: new Date().toISOString(),
+    tool: "website-precheck", version: "0.1.1", url, startedAt, finishedAt: new Date().toISOString(),
     scores: lighthouse ? Object.fromEntries(Object.entries(lighthouse.categoryScores).map(([k, v]) => [k, v.score])) : null,
-    categoryScores, brand,
+    categoryScores, brand, platform,
+    page: profile ? { origins: profile.origins, inlineScripts: profile.inlineScriptHashes.length, lang: profile.lang } : null,
+    checklist, mobile,
     headers, lighthouse, a11y, cookies, video, privacy, schema, findings, counts, verdict, skipped,
   };
 }
@@ -461,40 +600,68 @@ const VERDICT_SUMMARY = {
 };
 
 export function toMarkdown(report) {
-  const { url, counts, verdict, findings, scores, skipped, brand } = report;
-  const lines = [`# Website Precheck — ${url}`, ""];
-  if (brand?.name) lines.push(`_by ${brand.name}${brand.tagline ? " — " + brand.tagline : ""}_`, "");
-  lines.push(
-    "_This is engineering guidance, not a certification or legal advice. Automated checks are defense in" +
-    " depth, not a guarantee — they catch real, common issues but not everything. For anything with real" +
-    " legal or compliance exposure (GDPR, CCPA, ADA, a security incident), a qualified professional should" +
-    " review it._", ""
-  );
-  lines.push(`Run: ${report.startedAt}`, "", VERDICT_SUMMARY[verdict](counts), "");
-  if (scores) lines.push(`**Lighthouse:** ${Object.entries(scores).map(([k, v]) => `${k} ${v}`).join(" · ")}`, "");
-  lines.push(`**Findings:** ${counts.high} high · ${counts.medium} medium · ${counts.low} low`, "");
-  if (findings.length) {
-    lines.push("## Fix this first", "");
-    for (const f of findings.slice(0, 10)) {
-      lines.push(`- **[${f.category} · ${SEV_LABEL[f.severity]}]** ${f.plain}`);
-      lines.push(`  - Why it matters: ${f.impact}`);
-      lines.push(`  - What to do: ${f.fixPlain}`);
-      if (f.urls && f.urls.length) lines.push(`  - Affected file(s): ${f.urls.map((u) => String(u).split("/").pop() || u).join(", ")}`);
-      if (f.code) { lines.push("  - Code:", "    ```", ...f.code.split("\n").map((l) => `    ${l}`), "    ```"); }
-      else if (f.tool) lines.push(`  - Tool / command: ${f.tool}`);
+  const { url, counts, verdict, findings, categoryScores = {}, checklist, skipped, brand } = report;
+  const fence = (code) => ["```", ...String(code).split("\n"), "```"];
+  const findingMd = (f) => {
+    const out = [`#### [${SEV_LABEL[f.severity]}] ${f.plain}`, "", `- **Why it matters:** ${f.impact}`];
+    if (f.fixPlain && f.fixPlain !== f.where) out.push(`- **What to do:** ${f.fixPlain}`);
+    for (const it of (f.items || []).filter((i) => i.url || i.element).slice(0, 6)) {
+      out.push(`- \`${it.url ? siteRelative(it.url) + (it.line ? ":" + it.line : "") : it.element}\`${it.totalBytes ? ` — ${Math.round(it.totalBytes / 1024)} KiB` : ""}${it.wastedBytes ? `, could save ${Math.round(it.wastedBytes / 1024)} KiB` : ""}`);
     }
+    if (!(f.items || []).length && f.urls?.length) out.push(`- **File(s):** ${f.urls.map((u) => "`" + siteRelative(u) + "`").join(", ")}`);
+    for (const e of (f.elements || [])) {
+      out.push(`- \`${e.target}\`${e.summary ? ` — ${e.summary}` : ""}`);
+      if (e.fixed) out.push("", ...fence(e.fixed), "");
+    }
+    const solo = (f.elements || []).length === 1 && f.elements[0].fixed;
+    if (f.where) out.push(`- **Where it goes:** ${f.where}`);
+    if (f.code && !solo) out.push("", ...fence(f.code));
+    else if (!f.code && f.tool) out.push(`- **Tool / command:** ${f.tool}`);
+    return [...out, ""];
+  };
+
+  const lines = [`# Website Precheck — ${url}`, "", `**Website assessed:** ${siteName(url)} (${url}) · ${report.startedAt}`, ""];
+  if (brand?.name) lines.push(`_by ${brand.name}${brand.tagline ? " — " + brand.tagline : ""}_`, "");
+  const order = SECTION_ORDER.filter((s) => s in categoryScores);
+  lines.push(`| ${order.join(" | ")} |`, `|${order.map(() => "---").join("|")}|`, `| ${order.map((s) => categoryScores[s] == null ? "—" : categoryScores[s]).join(" | ")} |`, "");
+  lines.push(`${VERDICT_SUMMARY[verdict](counts)} (${counts.high} high · ${counts.medium} medium · ${counts.low} low)`, "");
+
+  lines.push("## 1 · What to do first", "");
+  if (findings.length) for (const f of findings.slice(0, 5)) lines.push(...findingMd(f));
+  else lines.push("Nothing to fix right now.", "");
+
+  lines.push(`## 2 · All issues (${findings.length})`, "");
+  if (findings.length) {
+    lines.push("| Priority | Section | Issue |", "|---|---|---|");
+    for (const f of findings) lines.push(`| ${SEV_LABEL[f.severity]} | ${f.category} | ${f.plain.replace(/\|/g, "\\|")} |`);
     lines.push("");
-  } else {
-    lines.push("No findings. 🎉", "");
   }
+
+  lines.push("## 3 · Section by section", "");
+  for (const cat of order) {
+    const s = categoryScores[cat];
+    lines.push(`### ${SECTION_TITLE[cat]} — ${s == null ? "not checked" : `${s}/100 (${bandLabel(s)})`}`, "");
+    lines.push(`**Why it matters:** ${SECTION_WHY[cat]}`, "", `**How this score is calculated:** ${SECTION_METHOD[cat]}`, "");
+    const items = (checklist?.items || []).filter((i) => i.section === cat);
+    if (items.length) {
+      lines.push("**What we checked:**", "");
+      for (const i of items) lines.push(`- ${i.status === "pass" ? "✓" : i.status === "fail" ? "✗" : "!"} ${i.label} — ${i.detail}`);
+      lines.push("");
+    }
+    const fs = findings.filter((f) => f.category === cat);
+    lines.push(fs.length ? "**What to do:**" : "Nothing to fix in this section.", "");
+    for (const f of fs) lines.push(...findingMd(f));
+  }
+
   if (skipped.length) {
-    lines.push("## Skipped checks", "");
+    lines.push("## Checks that didn't run", "");
     for (const s of skipped) lines.push(`- ${s.check}: ${s.reason}`);
     lines.push("");
   }
   lines.push(
-    "_Generated by [website-precheck](https://github.com/amandamalavedev/website-precheck) — a free, open" +
-    " tool. Not legal advice, not a certification of compliance — see the disclaimer above._"
+    "_This is engineering guidance, not a certification or legal advice. Automated checks are defense in depth, not a guarantee." +
+    " For anything with real legal or compliance exposure (GDPR, CCPA, ADA, a security incident), a qualified professional should review it._", "",
+    "_Generated by [website-precheck](https://github.com/amandamalavedev/website-precheck) — a free, open tool._"
   );
   return lines.join("\n");
 }
@@ -516,18 +683,27 @@ function gauge(label, score) {
 
 // Each finding leads with the plain-English translation; the raw tool title/meta becomes a
 // collapsed technical aside — present for anyone who wants it, never the thing you read first.
-function findingCard(f) {
+function findingCard(f, { anchor = true } = {}) {
   const measured = [f.savingMs ? `~${f.savingMs}ms faster` : "", f.savingKiB ? `~${f.savingKiB} KiB smaller` : ""].filter(Boolean).join(" · ");
-  const fileList = f.urls && f.urls.length
-    ? `<p class="files"><strong>Affected file${f.urls.length > 1 ? "s" : ""}:</strong></p>
-       <ul class="file-list">${f.urls.map((u) => `<li><code>${esc(String(u).split("/").pop() || u)}</code></li>`).join("")}</ul>`
-    : "";
-  // Real, copy-paste-ready code wins the spot — it's the thing you'd otherwise have to go write
-  // yourself from the "what to do" sentence. `tool` (prose) only shows when there's no code to give.
-  const codeBlock = f.code
-    ? `<div class="code-block"><div class="code-label">Code for this site</div><pre><code>${esc(f.code)}</code></pre></div>`
-    : (f.tool ? `<p class="tool"><strong>Tool / command:</strong> ${esc(f.tool)}</p>` : "");
-  return `<article class="finding sev-${f.severity}">
+  const kib = (b) => (b == null ? "—" : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KiB`);
+  const ttl = (ms) => (ms == null ? null : ms === 0 ? "not cached" : ms < 3600000 ? `${Math.round(ms / 60000)} min` : ms < 86400000 ? `${Math.round(ms / 3600000)} h` : `${Math.round(ms / 86400000)} days`);
+  // Speed: the exact files (size · could save · cache time · line)
+  const items = (f.items || []).filter((it) => it.url || it.element);
+  const itemTable = items.length ? `<table class="items"><thead><tr><th>File or element</th><th>Size</th><th>Could save</th>${items.some((i) => i.cacheTtlMs != null) ? "<th>Cached for</th>" : ""}</tr></thead><tbody>
+      ${items.map((it) => `<tr><td><code>${esc(it.url ? siteRelative(it.url) + (it.line ? `:${it.line}` : "") : it.element)}</code></td><td>${kib(it.totalBytes)}</td><td>${it.wastedBytes ? kib(it.wastedBytes) : it.wastedMs ? `${it.wastedMs} ms` : "—"}</td>${items.some((i) => i.cacheTtlMs != null) ? `<td>${esc(ttl(it.cacheTtlMs) || "—")}</td>` : ""}</tr>`).join("")}
+    </tbody></table>`
+    : (f.urls && f.urls.length ? `<p class="files"><strong>File${f.urls.length > 1 ? "s" : ""}:</strong> ${f.urls.map((u) => `<code>${esc(siteRelative(u))}</code>`).join(" ")}</p>` : "");
+  // Accessibility / Mobile: each failing element, why it fails, and its exact fix
+  const elements = (f.elements || []).length ? `<div class="elements"><p class="el-head"><strong>Exactly where:</strong>${f.count > f.elements.length ? ` <span class="muted">(first ${f.elements.length} of ${f.count})</span>` : ""}</p>
+      ${f.elements.map((e) => `<div class="el"><div><code>${esc(e.target)}</code></div>${e.html ? `<div class="el-html"><code>${esc(e.html)}</code></div>` : ""}${e.summary ? `<div class="el-why">${esc(e.summary)}</div>` : ""}${e.fixed ? `<div class="code-block small"><div class="code-label">Change it to</div><pre><code>${esc(e.fixed)}</code></pre></div>` : ""}</div>`).join("")}
+    </div>` : "";
+  // one element already shows its own fix — don't repeat the identical code underneath
+  const soloElementFix = (f.elements || []).length === 1 && f.elements[0].fixed;
+  const codeBlock = f.code && !soloElementFix
+    ? `${f.where ? `<p class="where"><strong>Where it goes:</strong> ${esc(f.where)}</p>` : ""}<div class="code-block"><div class="code-label">Paste this</div><pre><code>${esc(f.code)}</code></pre></div>`
+    : f.where ? `<p class="where"><strong>How to fix:</strong> ${esc(f.where)}</p>` : (f.tool ? `<p class="tool"><strong>Tool / command:</strong> ${esc(f.tool)}</p>` : "");
+  const doLine = f.fixPlain && f.fixPlain !== f.where ? `<p class="do"><strong>What to do:</strong> ${esc(f.fixPlain)}</p>` : "";
+  return `<article class="finding sev-${f.severity}"${anchor && f._id ? ` id="${f._id}"` : ""}>
     <div class="finding-head">
       <span class="badge sev-${f.severity}">${SEV_LABEL[f.severity]}</span>
       <span class="cat-pill">${esc(f.category)}</span>
@@ -535,112 +711,120 @@ function findingCard(f) {
     </div>
     ${measured ? `<p class="measured">${esc(measured)} if fixed</p>` : ""}
     <p class="why"><strong>Why it matters:</strong> ${esc(f.impact)}</p>
-    <p class="do"><strong>What to do:</strong> ${esc(f.fixPlain)}</p>
-    ${fileList}
+    ${doLine}
+    ${itemTable}
+    ${elements}
     ${codeBlock}
+    ${f.notes?.length ? `<ul class="notes">${f.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
     <details class="tech">
       <summary>Technical details</summary>
-      <p>${esc(f.title)}${f.meta ? ` <code>${esc(f.meta)}</code>` : ""}</p>
-      <p class="muted">${esc(f.why)}</p>
+      <p>${esc(f.title)}${f.meta ? ` <code>${esc(f.meta)}</code>` : ""}${f.axeImpact ? ` · axe impact: ${esc(f.axeImpact)}` : ""}${f.helpUrl ? ` · <a href="${esc(f.helpUrl)}" target="_blank" rel="noopener noreferrer">rule documentation</a>` : ""}</p>
+      ${f.why && f.why !== f.impact ? `<p class="muted">${esc(f.why)}</p>` : ""}
     </details>
   </article>`;
 }
 
+// Order, wording and scoring method for each section — the same seven as the gauges at the top.
+const SECTION_ORDER = ["Security", "Governance", "Privacy", "Speed", "Accessibility", "Mobile", "Schema"];
+const SECTION_TITLE = { Security: "Security", Governance: "Governance (data & cookies)", Privacy: "Privacy (third parties)", Speed: "Speed", Accessibility: "Accessibility", Mobile: "Mobile ready", Schema: "Schema (structured data)" };
+const SECTION_WHY = {
+  Security: "Whether someone could attack the site or its visitors: steal what they type, inject their own code, trick them into clicking, or read your code, keys and private files.",
+  Governance: "The data your own site stores in a visitor's browser (cookies). A badly configured cookie can be stolen or sent where it shouldn't, and privacy laws (GDPR, CCPA) expect you to know and justify every one.",
+  Privacy: "Which outside companies learn that someone visited — analytics, advertising and social trackers. Visitors, and laws like GDPR and CCPA, expect each one to be disclosed.",
+  Speed: "Slow pages lose visitors — many mobile visitors leave a page that takes over 3 seconds — and Google ranks faster pages higher.",
+  Accessibility: "About 1 in 4 adults has a disability. Screen-reader and keyboard users need these basics to use the site at all, and inaccessible US sites face ADA lawsuits.",
+  Mobile: "Most visits happen on phones. A page that scrolls sideways, has buttons too small to tap, or tiny text feels broken and gets abandoned.",
+  Schema: "Structured data (schema.org JSON-LD) is how Google and AI answer engines read facts about you — your name, logo, contact details and what you offer — for rich search results and accurate AI answers.",
+};
+const SECTION_METHOD = {
+  Security: "Starts at 100. Each failed critical check (HTTPS, the http→https redirect, the Content-Security-Policy, insecure content, or anything that exposes your code, keys or private files) costs 25 points; each other failed check costs 10; each warning costs 4.",
+  Governance: "Starts at 100. Each High issue costs 25 points, each Medium 10, each Low 4 — e.g. a cookie missing Secure is High, a cookie missing SameSite is Medium.",
+  Privacy: "Starts at 100. Each High issue costs 25 points, each Medium 10, each Low 4 — e.g. trackers loading with no privacy policy linked is High.",
+  Speed: "Google Lighthouse's Performance score, taken as the middle (median) of several runs. It blends five measurements: Total Blocking Time 30%, Largest Contentful Paint 25%, Cumulative Layout Shift 25%, First Contentful Paint 10%, Speed Index 10%.",
+  Accessibility: "Starts at 100. The axe-core engine tests the WCAG 2.1 A/AA rules; each failing rule costs 25 points if it's critical (blocks a disabled visitor outright), 10 if serious, 4 if moderate or minor.",
+  Mobile: "Four checks on a 390×844 phone screen, 25 points each: a mobile viewport tag, no sideways scrolling, buttons and links at least 24×24px, and text at least 12px.",
+  Schema: "How complete your structured data is: the share of each type's recommended properties that are filled in, averaged over the blocks found. No structured data at all scores 0.",
+};
+const bandLabel = (s) => (s == null ? "Not checked" : s >= 90 ? "Good" : s >= 50 ? "Needs improvement" : "Poor");
+
+// Core Web Vitals thresholds, as Google publishes them (good ≤ first number, poor > second)
+const CWV = [
+  ["lcpMs", "Largest Contentful Paint (LCP)", "When the main content (usually the biggest image or heading) appears", 2500, 4000, "ms"],
+  ["tbtMs", "Total Blocking Time (TBT)", "How long the page is frozen by scripts while loading (stands in for responsiveness)", 200, 600, "ms"],
+  ["cls", "Cumulative Layout Shift (CLS)", "How much the layout jumps around as it loads", 0.1, 0.25, ""],
+  ["fcpMs", "First Contentful Paint (FCP)", "When anything first appears on screen", 1800, 3000, "ms"],
+  ["speedIndexMs", "Speed Index", "How quickly the visible page fills in", 3400, 5800, "ms"],
+  ["ttfbMs", "Server response (TTFB)", "How long the server takes to start answering", 800, 1800, "ms"],
+];
+
 export function toHTML(report) {
-  const { url, startedAt, categoryScores, counts, verdict, findings, headers, a11y, cookies, privacy, schema, lighthouse, skipped, brand } = report;
+  const { url, startedAt, categoryScores, counts, verdict, findings, headers, a11y, cookies, privacy, schema, lighthouse, mobile, checklist, platform, page, skipped, brand } = report;
   const date = new Date(startedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+  findings.forEach((f, i) => { f._id = `f${i + 1}`; });
+  const skipNote = (check) => { const s = skipped.find((x) => x.check === check); return `<p class="muted">Not checked${s ? ": " + esc(s.reason) : ""}.</p>`; };
+  const sections = SECTION_ORDER.filter((s) => s in categoryScores);
+  const slug = (s) => "sec-" + s.toLowerCase();
 
-  // One gauge per thing this report actually checks — the familiar Lighthouse-style gauge row, but
-  // for our own pillars (Security, Governance, Privacy, Speed, Accessibility) instead of theirs.
-  const topGauges = Object.entries(categoryScores).map(([k, v]) => gauge(k, v)).join("");
+  const topGauges = sections.map((k) => `<a class="gauge-link" href="#${slug(k)}">${categoryScores[k] == null
+    ? `<div class="gauge"><div class="gauge-ring none"><span>—</span></div><div class="gauge-label">${esc(k)}</div></div>`
+    : gauge(k, categoryScores[k])}</a>`).join("");
 
-  const fmtMs = (v) => (v == null ? "—" : v >= 1000 ? (v / 1000).toFixed(2) + " s" : v + " ms");
-  // Never just say "mobile" or "4G" — state exactly what device and network profile Lighthouse
-  // actually emulated, pulled from its own configSettings/environment, not asserted.
-  const tc = lighthouse?.testConditions;
-  const testedAs = tc
-    ? `<p class="tested-as">Tested as: <strong>${esc(tc.device)}</strong> emulation${tc.screen ? `, ${esc(tc.screen)} screen` : ""} on <strong>${esc(tc.networkLabel)}</strong>${tc.rttMs != null ? ` (${tc.rttMs}ms round-trip, ${tc.downloadKbps} Kbps down / ${tc.uploadKbps} Kbps up, ${tc.cpuSlowdown}× CPU slowdown)` : ""}.</p>`
-    : "";
-  const speedDetail = lighthouse
-    ? `${testedAs}<div class="metrics-row">
-        <div class="metric"><div class="metric-val">${fmtMs(lighthouse.metrics.lcpMs)}</div><div class="metric-label">LCP</div></div>
-        <div class="metric"><div class="metric-val">${fmtMs(lighthouse.metrics.fcpMs)}</div><div class="metric-label">FCP</div></div>
-        <div class="metric"><div class="metric-val">${fmtMs(lighthouse.metrics.tbtMs)}</div><div class="metric-label">TBT</div></div>
-        <div class="metric"><div class="metric-val">${lighthouse.metrics.cls?.toFixed(3) ?? "—"}</div><div class="metric-label">CLS</div></div>
-        <div class="metric"><div class="metric-val">${fmtMs(lighthouse.metrics.speedIndexMs)}</div><div class="metric-label">Speed Index</div></div>
-        <div class="metric"><div class="metric-val">${fmtMs(lighthouse.metrics.ttfbMs)}</div><div class="metric-label">TTFB</div></div>
-       </div>${lighthouse.lcpElement ? `<p class="muted">Largest Contentful Paint element: <code>${esc(lighthouse.lcpElement.slice(0, 160))}</code></p>` : ""}`
-    : `<p class="muted">Lighthouse wasn't run for this report${skipped.find((s) => s.check === "lighthouse") ? " (" + esc(skipped.find((s) => s.check === "lighthouse").reason) + ")" : ""}.</p>`;
+  // ---------- WHAT TO DO FIRST
+  const first = findings.slice(0, 5);
+  const firstHTML = first.map((f) => findingCard(f, { anchor: false })).join("") || `<p class="all-clear">Nothing to fix right now.</p>`;
 
-  const top5 = findings.slice(0, 5);
-  const topFixes = top5.map(findingCard).join("") || `<p class="all-clear">No findings — nothing to fix right now.</p>`;
+  // ---------- ALL ISSUES
+  const allRows = findings.map((f) => `<tr><td><span class="badge sev-${f.severity}">${SEV_LABEL[f.severity]}</span></td><td>${esc(f.category)}</td><td><a href="#${f._id}">${esc(f.plain)}</a></td></tr>`).join("");
+  const allHTML = findings.length
+    ? `<table class="all-issues"><thead><tr><th>Priority</th><th>Section</th><th>Issue (click for the fix)</th></tr></thead><tbody>${allRows}</tbody></table>`
+    : `<p class="all-clear">No issues found in any section.</p>`;
 
-  // "All findings" is the full record grouped by category, but skip what's already shown above —
-  // repeating the same 5 cards verbatim just makes the page twice as long with nothing new to read.
-  const rest = findings.slice(5);
-  const byCategory = {};
-  for (const f of rest) (byCategory[f.category] ??= []).push(f);
-  const CAT_INTRO = {
-    Security: "Things that could let someone attack your site or its visitors.",
-    Speed: "Things slowing the page down for real visitors.",
-    Accessibility: "Things that make the site hard or impossible for some visitors to use.",
-    Governance: "What this site itself collects and stores in a visitor's browser.",
-    Privacy: "What third parties this site exposes visitors to, and whether that's disclosed.",
-    SEO: "Whether search engines and AI answer engines have structured facts to work with.",
+  // ---------- per-section "what we checked"
+  const tick = (st) => (st === "pass" ? "✓" : st === "fail" ? "✗" : "!");
+  const checkList = (items) => `<ul class="checklist checklist-why">${items.map((i) => `<li class="${i.status}"><span class="tick">${tick(i.status)}</span><div><div class="checklist-name">${esc(i.label)}</div><div class="checklist-why-text">${esc(i.detail)}</div></div></li>`).join("")}</ul>`;
+  const fmtMs = (v) => (v == null ? "—" : v >= 1000 ? (v / 1000).toFixed(2) + " s" : Math.round(v) + " ms");
+
+  const checked = {
+    Security: () => checklist ? checkList(checklist.items.filter((i) => i.section === "Security")) + `<p class="muted">Host detected: <strong>${esc(platform?.name || "unknown")}</strong> — every fix below is written for it.</p>` : skipNote("headers"),
+    Governance: () => !cookies ? skipNote("cookies") : (checklist ? checkList(checklist.items.filter((i) => i.section === "Governance")) : "")
+      + (cookies.cookies.length ? `<table class="items"><thead><tr><th>Cookie</th><th>Secure</th><th>SameSite</th><th>HttpOnly</th></tr></thead><tbody>${cookies.cookies.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td>${c.secure ? "✓" : "✗"}</td><td>${esc(c.sameSite || "✗ not set")}</td><td>${c.httpOnly ? "✓" : "—"}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">The page set no cookies when first loaded. (Cookies set later — after a login, or after accepting a banner — aren't seen by this check.)</p>`),
+    Privacy: () => !privacy ? skipNote("privacy") : (checklist ? checkList(checklist.items.filter((i) => i.section === "Privacy")) : "")
+      + (privacy.thirdParty.length ? `<p><strong>Outside servers this page loads from:</strong></p><ul class="checklist">${privacy.thirdParty.map((t) => `<li class="${t.label ? "warn" : "pass"}"><span class="tick">${t.label ? "!" : "·"}</span> <code>${esc(t.host)}</code> ${t.label ? `<strong>${esc(t.label)}</strong> — a tracker` : "— not a known tracker (e.g. a font or file host)"}</li>`).join("")}</ul>` : `<p class="muted">The page loads nothing from outside servers.</p>`),
+    Speed: () => !lighthouse ? skipNote("lighthouse") : `${lighthouse.testConditions ? `<p class="tested-as">Tested as <strong>${esc(lighthouse.testConditions.device)}</strong> on <strong>${esc(lighthouse.testConditions.networkLabel)}</strong>${lighthouse.testConditions.rttMs != null ? ` (${lighthouse.testConditions.rttMs} ms round-trip, ${lighthouse.testConditions.downloadKbps} Kbps down, ${lighthouse.testConditions.cpuSlowdown}× slower CPU)` : ""} — ${lighthouse.runs === 1 ? "1 run, scored " + lighthouse.scores[0] : lighthouse.runs + " runs scored " + lighthouse.scores.join(", ") + "; the middle one counts"}.</p>` : ""}
+      <table class="cwv"><thead><tr><th>Measurement</th><th>Your page</th><th>Good</th><th>Poor</th><th>Rating</th></tr></thead><tbody>
+      ${CWV.map(([k, name, what, good, poor, unit]) => { const v = lighthouse.metrics[k]; const r = v == null ? "—" : v <= good ? "Good" : v <= poor ? "Needs improvement" : "Poor"; const show = (x) => unit ? fmtMs(x) : (x ?? 0).toFixed(3).replace(/0+$/, "").replace(/\.$/, ""); return `<tr><td><strong>${esc(name)}</strong><div class="muted">${esc(what)}</div></td><td>${v == null ? "—" : show(v)}</td><td>≤ ${show(good)}</td><td>&gt; ${show(poor)}</td><td><span class="rating ${r === "Good" ? "good" : r === "Poor" ? "bad" : "mid"}">${r}</span></td></tr>`; }).join("")}
+      </tbody></table>
+      ${lighthouse.lcpElement ? `<p class="muted">The "main content" Lighthouse timed (LCP element): <code>${esc(lighthouse.lcpElement.slice(0, 160))}</code></p>` : ""}
+      ${lighthouse.reportPath ? `<p class="muted">Full Lighthouse report (every audit and trace): <code>${esc(lighthouse.reportPath)}</code></p>` : ""}`,
+    Accessibility: () => !a11y ? skipNote("a11y") : `<p>${a11y.passes} automated rule${a11y.passes === 1 ? "" : "s"} passed; ${a11y.violations.length} failed${a11y.violations.length ? ` (${a11y.total} element${a11y.total === 1 ? "" : "s"} in total)` : ""}.</p>
+      ${a11y.incompleteDetail?.length ? `<p><strong>Check these by eye</strong> — the automated check couldn't decide (e.g. text over an image or a gradient):</p><ul class="checklist">${a11y.incompleteDetail.map((r) => `<li class="warn"><span class="tick">!</span><div><div class="checklist-name">${esc(r.help)} (${r.count})</div><div class="checklist-why-text">${r.nodes.map((n) => `<code>${esc(n.target)}</code>`).join(" ")}</div></div></li>`).join("")}</ul>` : ""}
+      <p class="muted">Automated checks catch roughly a third to half of real accessibility problems — also try the site with only a keyboard (Tab, Enter) and with a screen reader.</p>`,
+    Mobile: () => !mobile ? skipNote("mobile") : checkList([
+      { status: mobile.checks.viewport.ok ? "pass" : "fail", label: "Mobile viewport tag", detail: mobile.checks.viewport.value ? `<meta name="viewport" content="${mobile.checks.viewport.value}">${mobile.checks.viewport.zoomBlocked ? " — blocks pinch-zoom" : ""}` : "Missing — phones will show a shrunken desktop page." },
+      { status: mobile.checks.overflow.ok ? "pass" : "fail", label: "No sideways scrolling", detail: `Page is ${mobile.checks.overflow.scrollWidth}px wide on a ${mobile.checks.overflow.screenWidth}px screen.` },
+      { status: mobile.checks.tap.ok ? "pass" : "fail", label: "Buttons and links big enough to tap (24×24px)", detail: `${mobile.checks.tap.small.length} of ${mobile.checks.tap.checked} too small.` },
+      { status: mobile.checks.text.ok ? "pass" : "fail", label: "Text readable without zooming (12px+)", detail: `${mobile.checks.text.tiny.length} piece${mobile.checks.text.tiny.length === 1 ? "" : "s"} of text too small.` },
+    ]) + `<p class="muted">Tested as: ${esc(mobile.device)}.</p>`,
+    Schema: () => !schema ? skipNote("schema") : schema.hasSchema
+      ? `<ul class="checklist">${schema.blocks.map((b) => `<li class="${!b.recognized || b.score === 100 ? "pass" : "warn"}"><span class="tick">${!b.recognized ? "·" : b.score === 100 ? "✓" : "!"}</span> ${esc(b.type)} ${b.recognized ? `— ${b.score}% complete${b.missing?.length ? ` (missing: ${esc(b.missing.join(", "))})` : ""}` : "— present, not scored"}</li>`).join("")}</ul>`
+      : `<p class="muted">No structured data on this page. The block in "What to do" below is ready to paste.</p>`,
   };
-  const findingsHTML = Object.entries(byCategory).map(([cat, items]) => `
-    <section class="cat-section">
-      <h3>${esc(cat)} <span class="count">${items.length}</span></h3>
-      ${CAT_INTRO[cat] ? `<p class="cat-intro">${esc(CAT_INTRO[cat])}</p>` : ""}
-      ${items.map(findingCard).join("")}
-    </section>`).join("") || (findings.length ? `<p class="all-clear">Everything else is covered in “Fix this first” above — nothing more to add.</p>` : `<p class="all-clear">No findings in any category — nothing to fix right now.</p>`);
 
-  const headersChecklist = headers ? `
-    <ul class="checklist checklist-why">
-      ${headers.checks.map((c) => `<li class="${c.present ? "pass" : "fail"}">
-        <span class="tick">${c.present ? "✓" : "✗"}</span>
-        <div><div class="checklist-name">${esc(HEADER_LABEL[c.name] || c.name)} <code>${esc(c.name)}</code></div><div class="checklist-why-text">${esc(c.why)}</div></div>
-      </li>`).join("")}
-    </ul>` : `<p class="muted">Not checked${skipped.find((s) => s.check === "headers") ? ": " + esc(skipped.find((s) => s.check === "headers").reason) : ""}.</p>`;
-
-  const a11yFindings = findings.filter((f) => f.category === "Accessibility");
-  const a11ySection = a11y
-    ? (a11yFindings.length
-        ? a11yFindings.map(findingCard).join("")
-        : `<p class="all-clear">No automated accessibility violations found.</p>`) +
-      `<p class="muted">Checked ${a11y.passes} rule(s) automatically; ${a11y.incomplete.length} need a human look (automated tools can't fully judge these). Automated checks catch roughly a third to half of real accessibility issues — pair this with a manual pass.</p>`
-    : `<p class="muted">Not checked${skipped.find((s) => s.check === "a11y") ? ": " + esc(skipped.find((s) => s.check === "a11y").reason) : ""}.</p>`;
-
-  const governanceFindings = findings.filter((f) => f.category === "Governance");
-  const cookieInventory = cookies
-    ? (cookies.cookies.length
-        ? `<ul class="checklist">${cookies.cookies.map((c) => `<li class="${c.secure && c.sameSite ? "pass" : "fail"}"><span class="tick">${c.secure && c.sameSite ? "✓" : "!"}</span> ${esc(c.name)} <code>Secure=${c.secure} · SameSite=${esc(c.sameSite || "not set")} · HttpOnly=${c.httpOnly}</code></li>`).join("")}</ul>`
-        : `<p class="all-clear">No cookies set on the first response.</p>`)
-    : `<p class="muted">Not checked${skipped.find((s) => s.check === "cookies") ? ": " + esc(skipped.find((s) => s.check === "cookies").reason) : ""}.</p>`;
-  const governanceSection = cookieInventory + governanceFindings.map(findingCard).join("")
-    + `<p class="muted">This lists what's set on the first response only, and doesn't judge whether HttpOnly should be on or off — a cookie a script needs to read (like a CSRF token) is sometimes correctly non-HttpOnly. This is engineering guidance, not legal advice — a full consent/compliance review (GDPR, CCPA, etc.) needs a qualified professional.</p>`;
-
-  const privacyFindings = findings.filter((f) => f.category === "Privacy");
-  const trackerInventory = privacy
-    ? (privacy.thirdParty.length
-        ? `<ul class="checklist">${privacy.thirdParty.map((t) => `<li class="${t.label ? "fail" : "pass"}"><span class="tick">${t.label ? "!" : "·"}</span> ${esc(t.label || t.host)} <code>${esc(t.host)}</code></li>`).join("")}
-           <li class="${privacy.hasPrivacyLink ? "pass" : "fail"}"><span class="tick">${privacy.hasPrivacyLink ? "✓" : "✗"}</span> Privacy policy link ${privacy.hasPrivacyLink ? "found" : "not found"}</li></ul>`
-        : `<p class="all-clear">No third-party scripts or embeds detected on this page.</p>`)
-    : `<p class="muted">Not checked${skipped.find((s) => s.check === "privacy") ? ": " + esc(skipped.find((s) => s.check === "privacy").reason) : ""}.</p>`;
-  const privacySection = trackerInventory + privacyFindings.map(findingCard).join("")
-    + `<p class="muted">Third-party origins are listed for transparency, not flagged on their own — a CDN or webfont host isn't a tracker. Only a recognized analytics/ad/tracking service with no privacy policy link becomes a finding.</p>`;
-
-  const schemaFindings = findings.filter((f) => f.category === "SEO");
-  const schemaInventory = schema
-    ? (schema.hasSchema
-        ? `<ul class="checklist">${schema.blocks.map((b) => `<li class="${!b.recognized ? "pass" : b.score === 100 ? "pass" : "fail"}"><span class="tick">${!b.recognized ? "·" : b.score === 100 ? "✓" : "!"}</span> ${esc(b.type)} ${b.recognized ? `<code>${b.score}% complete</code>` : "<code>not scored</code>"}</li>`).join("")}</ul>`
-        : `<p class="all-clear" style="color:var(--mid);">No structured data (JSON-LD) found on this page.</p>`)
-    : `<p class="muted">Not checked${skipped.find((s) => s.check === "schema") ? ": " + esc(skipped.find((s) => s.check === "schema").reason) : ""}.</p>`;
-  const schemaSection = schemaInventory + schemaFindings.map(findingCard).join("")
-    + `<p class="muted">Scored against a baseline set of recommended properties per type (Organization, LocalBusiness, Article, etc.) — "100%" means the common fields are filled in, not that every possible schema.org property is present.</p>`;
+  const sectionHTML = sections.map((cat) => {
+    const s = categoryScores[cat];
+    const items = findings.filter((f) => f.category === cat);
+    return `<section class="card section" id="${slug(cat)}">
+      <div class="sec-head"><h2>${esc(SECTION_TITLE[cat])}</h2><div class="sec-score ${s == null ? "none" : scoreBand(s)}"><span>${s == null ? "—" : s}</span><small>${s == null ? "" : "/100 · "}${bandLabel(s)}</small></div></div>
+      <p class="sec-why"><strong>Why it matters:</strong> ${esc(SECTION_WHY[cat])}</p>
+      <p class="sec-method"><strong>How this score is calculated:</strong> ${esc(SECTION_METHOD[cat])}</p>
+      <h3>What we checked</h3>
+      ${checked[cat]()}
+      <h3>What to do${items.length ? ` <span class="count">${items.length}</span>` : ""}</h3>
+      ${items.length ? items.map((f) => findingCard(f)).join("") : `<p class="all-clear">Nothing to fix in this section.</p>`}
+    </section>`;
+  }).join("");
 
   const VERDICT_TITLE = { urgent: "Urgent issues found", attention: "A few things worth fixing", good: "Looking good" };
-  const verdictText = VERDICT_SUMMARY[verdict](counts);
 
   return `<!doctype html>
 <html lang="en">
@@ -665,101 +849,97 @@ export function toHTML(report) {
   }
   *{box-sizing:border-box;}
   body{margin:0; padding:24px 16px; background:var(--bg); color:var(--ink); font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;}
-  .wrap{max-width:860px; margin:0 auto;}
+  .wrap{max-width:900px; margin:0 auto;}
+  a{color:var(--accent);}
   header.top{display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:24px;}
-  header.top h1{font-size:20px; margin:0; word-break:break-all;}
+  header.top h1{font-size:20px; margin:0;}
   header.top .meta{color:var(--ink-faint); font-size:13px;}
-  .verdict{display:flex; flex-wrap:wrap; align-items:center; gap:16px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin-bottom:20px; border-left:5px solid var(--verdict-color,var(--good));}
-  .verdict.urgent{--verdict-color:var(--bad);}
-  .verdict.attention{--verdict-color:var(--mid);}
-  .verdict.good{--verdict-color:var(--good);}
-  .verdict h2{margin:0 0 4px; font-size:19px; color:var(--verdict-color,var(--ink));}
-  .verdict p{margin:0; color:var(--ink-dim);}
-  .verdict .target{word-break:break-all; color:var(--ink-faint); font-size:13px; margin-top:2px;}
+  .assessed{display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; margin:-6px 0 18px; padding:14px 18px; background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:12px;}
+  .assessed-lbl{width:100%; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint);}
+  .assessed-site{font-size:24px; font-weight:800; color:var(--ink); text-decoration:none; word-break:break-all;}
+  .assessed-url{font-size:13px; color:var(--ink-faint); word-break:break-all;}
   .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin-bottom:20px;}
-  .card h2{font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-dim); margin:0 0 14px;}
-  .gauges{display:flex; flex-wrap:wrap; gap:28px; justify-content:center; padding:8px 0;}
-  .gauge{display:flex; flex-direction:column; align-items:center; gap:8px; width:96px;}
-  .gauge-ring{position:relative; width:84px; height:84px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight:700;}
+  .card > h2, .part-title{font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-dim); margin:0 0 14px;}
+  .part-title{margin:28px 0 12px; font-size:15px; color:var(--ink);}
+  .top-gauges{display:flex; flex-wrap:wrap; gap:18px; justify-content:center;}
+  .gauge-link{text-decoration:none; color:inherit;}
+  .gauge{display:flex; flex-direction:column; align-items:center; gap:8px; width:90px;}
+  .gauge-ring{position:relative; width:72px; height:72px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:20px; font-weight:700;}
   .gauge-ring::before{content:""; position:absolute; inset:0; border-radius:50%; background:conic-gradient(var(--ring-color,var(--good)) var(--deg,0deg), var(--line) 0);}
   .gauge-ring::after{content:""; position:absolute; inset:8px; border-radius:50%; background:var(--card);}
   .gauge-ring span{position:relative; z-index:1;}
   .gauge-ring.good{--ring-color:var(--good); color:var(--good);}
   .gauge-ring.mid{--ring-color:var(--mid); color:var(--mid);}
   .gauge-ring.bad{--ring-color:var(--bad); color:var(--bad);}
-  .gauge-label{font-size:12px; color:var(--ink-dim); text-transform:capitalize; text-align:center;}
-  .counts{display:flex; gap:10px; flex-wrap:wrap; margin-top:4px;}
-  .pill{border-radius:999px; padding:6px 14px; font-size:13px; font-weight:700;}
-  .pill.high{background:var(--bad-bg); color:var(--bad);}
-  .pill.medium{background:var(--mid-bg); color:var(--mid);}
-  .pill.low{background:var(--good-bg); color:var(--good);}
+  .gauge-ring.none{--ring-color:var(--line); color:var(--ink-faint);}
+  .gauge-label{font-size:12px; color:var(--ink-dim); text-align:center;}
+  .legend{text-align:center; font-size:12px; color:var(--ink-faint); margin-top:10px;}
+  .intro{color:var(--ink-dim); font-size:13.5px;}
+  .intro .disclaimer{display:block; margin-top:8px; font-size:12px; color:var(--ink-faint); font-style:italic;}
+  .verdict{display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; border-left:5px solid var(--verdict-color,var(--good));}
+  .verdict.urgent{--verdict-color:var(--bad);} .verdict.attention{--verdict-color:var(--mid);} .verdict.good{--verdict-color:var(--good);}
+  .verdict h2{margin:0 0 4px; font-size:19px; color:var(--verdict-color); text-transform:none; letter-spacing:0;}
+  .verdict p{margin:0; color:var(--ink-dim);}
+  .counts{display:flex; gap:8px; flex-wrap:wrap;}
+  .pill{border-radius:999px; padding:5px 12px; font-size:13px; font-weight:700;}
+  .pill.high{background:var(--bad-bg); color:var(--bad);} .pill.medium{background:var(--mid-bg); color:var(--mid);} .pill.low{background:var(--good-bg); color:var(--good);}
   .badge{display:inline-block; border-radius:6px; padding:2px 8px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; flex-shrink:0;}
-  .badge.sev-high{background:var(--bad-bg); color:var(--bad);}
-  .badge.sev-medium{background:var(--mid-bg); color:var(--mid);}
-  .badge.sev-low{background:var(--good-bg); color:var(--good);}
+  .badge.sev-high{background:var(--bad-bg); color:var(--bad);} .badge.sev-medium{background:var(--mid-bg); color:var(--mid);} .badge.sev-low{background:var(--good-bg); color:var(--good);}
   .cat-pill{display:inline-block; border:1px solid var(--line); border-radius:999px; padding:2px 9px; font-size:11px; font-weight:600; color:var(--ink-dim); flex-shrink:0;}
-  .top-gauges{display:flex; flex-wrap:wrap; gap:24px; justify-content:center; padding:4px 0 4px;}
-  .top-gauges .gauge-ring{width:72px; height:72px; font-size:20px;}
-  .skill-desc{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 20px; margin-bottom:20px; color:var(--ink-dim); font-size:13.5px; line-height:1.6;}
-  .skill-desc strong{color:var(--ink);}
-  .skill-desc .disclaimer{display:block; font-size:12px; color:var(--ink-faint); font-style:italic;}
-  .cat-section{margin-bottom:18px;}
-  .cat-section h3{font-size:15px; margin:0 0 4px; color:var(--ink);}
-  .cat-section .count{color:var(--ink-faint); font-weight:400;}
-  .cat-intro{color:var(--ink-faint); font-size:13px; margin:0 0 10px;}
-  article.finding{border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin-bottom:10px; background:var(--bg);}
-  .finding-head{display:flex; align-items:baseline; gap:8px; margin-bottom:8px;}
+  table{width:100%; border-collapse:collapse; font-size:13.5px; margin:8px 0 12px;}
+  th{text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-faint); padding:6px 8px; border-bottom:2px solid var(--line);}
+  td{padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; color:var(--ink-dim);}
+  td code{word-break:break-all;}
+  .all-issues td:first-child{width:90px;} .all-issues td:nth-child(2){width:120px; font-weight:600; color:var(--ink);}
+  .rating{font-weight:700; font-size:12px; border-radius:6px; padding:2px 8px; white-space:nowrap;}
+  .rating.good{background:var(--good-bg); color:var(--good);} .rating.mid{background:var(--mid-bg); color:var(--mid);} .rating.bad{background:var(--bad-bg); color:var(--bad);}
+  .section{scroll-margin-top:12px;}
+  .sec-head{display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:12px; margin-bottom:12px;}
+  .sec-head h2{margin:0; font-size:20px; text-transform:none; letter-spacing:0; color:var(--ink);}
+  .sec-score{display:flex; align-items:baseline; gap:6px; font-weight:800;}
+  .sec-score span{font-size:30px;} .sec-score small{font-size:13px; font-weight:600; color:var(--ink-dim);}
+  .sec-score.good span{color:var(--good);} .sec-score.mid span{color:var(--mid);} .sec-score.bad span{color:var(--bad);} .sec-score.none span{color:var(--ink-faint);}
+  .sec-why,.sec-method{font-size:13.5px; color:var(--ink-dim); margin:6px 0;}
+  .sec-method{background:var(--bg); border-radius:8px; padding:8px 12px;}
+  .section h3{font-size:14px; margin:18px 0 8px; color:var(--ink);}
+  .section h3 .count{color:var(--ink-faint); font-weight:400;}
+  article.finding{border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin-bottom:10px; background:var(--bg); scroll-margin-top:12px;}
+  article.finding:target{outline:2px solid var(--accent);}
+  .finding-head{display:flex; align-items:baseline; gap:8px; margin-bottom:8px; flex-wrap:wrap;}
   .finding-head h4{margin:0; font-size:14.5px; color:var(--ink); line-height:1.45;}
   article.finding p{margin:5px 0; font-size:13.5px; color:var(--ink-dim);}
-  article.finding p.do{color:var(--ink);}
   article.finding p strong{color:var(--ink);}
-  article.finding p.measured{display:inline-block; background:var(--good-bg); color:var(--good); font-size:12px; font-weight:700; border-radius:6px; padding:2px 8px; margin:0 0 8px;}
-  article.finding p.tool{background:var(--bg); border-left:3px solid var(--accent); padding:6px 10px; border-radius:4px;}
-  article.finding p.files{margin-bottom:2px;}
-  ul.file-list{list-style:none; margin:0 0 8px; padding:0; display:flex; flex-wrap:wrap; gap:6px;}
-  ul.file-list li{font-size:12px;}
+  article.finding p.measured{display:inline-block; background:var(--good-bg); color:var(--good); font-size:12px; font-weight:700; border-radius:6px; padding:2px 8px;}
+  p.where{background:var(--card); border-left:3px solid var(--accent); padding:6px 10px; border-radius:4px;}
+  .elements{margin:8px 0;}
+  .el{border-top:1px dashed var(--line); padding:8px 0;}
+  .el-html code{font-size:12px; color:var(--ink-faint);}
+  .el-why{font-size:12.5px; color:var(--bad); margin-top:2px;}
   .code-block{margin:8px 0; border-radius:6px; overflow:hidden; border:1px solid var(--line);}
   .code-label{background:var(--line); color:var(--ink-dim); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; padding:5px 10px;}
   .code-block pre{margin:0; padding:12px 14px; overflow-x:auto; background:#0b1220; color:#d6e2f5; font-size:12.5px; line-height:1.55;}
+  .code-block.small pre{padding:8px 12px; font-size:12px;}
   .code-block pre code{background:none; border:none; padding:0; color:inherit; font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace; white-space:pre;}
+  ul.notes{margin:6px 0; padding-left:18px; font-size:12.5px; color:var(--ink-dim);}
   details.tech{margin-top:8px;}
-  details.tech summary{cursor:pointer; font-size:12px; color:var(--ink-faint); list-style:none;}
-  details.tech summary::-webkit-details-marker{display:none;}
-  details.tech summary::before{content:"▸ "; }
-  details.tech[open] summary::before{content:"▾ "; }
+  details.tech summary{cursor:pointer; font-size:12px; color:var(--ink-faint);}
   details.tech p{margin:6px 0 0; font-size:12.5px;}
   .all-clear{color:var(--good); font-weight:600;}
-  ul.checklist{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:13.5px;}
-  ul.checklist li{display:flex; align-items:center; gap:8px;}
-  ul.checklist .tick{font-weight:700; width:16px; text-align:center;}
-  ul.checklist li.pass .tick{color:var(--good);}
-  ul.checklist li.fail .tick{color:var(--bad);}
-  ul.checklist li.fail{color:var(--ink-dim);}
-  ul.checklist code{margin-left:auto; color:var(--ink-faint);}
-  ul.checklist-why li{align-items:flex-start;}
-  ul.checklist-why .checklist-name{font-weight:600; color:var(--ink);}
-  ul.checklist-why .checklist-name code{margin-left:6px; font-weight:400;}
-  ul.checklist-why .checklist-why-text{color:var(--ink-faint); font-size:12.5px; margin-top:1px;}
+  ul.checklist{list-style:none; margin:0 0 10px; padding:0; display:flex; flex-direction:column; gap:7px; font-size:13.5px;}
+  ul.checklist li{display:flex; align-items:flex-start; gap:8px;}
+  ul.checklist .tick{font-weight:800; width:16px; text-align:center; flex-shrink:0;}
+  ul.checklist li.pass .tick{color:var(--good);} ul.checklist li.fail .tick{color:var(--bad);} ul.checklist li.warn .tick{color:var(--mid);}
+  .checklist-name{font-weight:600; color:var(--ink);}
+  .checklist-why-text{color:var(--ink-faint); font-size:12.5px;}
   code{background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:12.5px;}
   .muted{color:var(--ink-faint); font-size:13px;}
-  .assessed{display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; margin:-6px 0 18px; padding:14px 18px; background:var(--card, #fff); border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:12px;}
-  .assessed-lbl{width:100%; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint);}
-  .assessed-site{font-size:24px; font-weight:800; color:var(--ink); text-decoration:none; word-break:break-all;}
-  .assessed-site:hover{text-decoration:underline;}
-  .assessed-url{font-size:13px; color:var(--ink-faint); word-break:break-all;}
+  p.tested-as{font-size:13px; color:var(--ink-dim);}
   .brand-block{display:flex; align-items:center; gap:10px;}
-  .brand-block img{width:36px; height:36px; border-radius:8px; flex-shrink:0;}
+  .brand-block img{width:36px; height:36px; border-radius:8px;}
   .brand-block .brand-text h1{font-size:19px; margin:0;}
   .brand-block .brand-text .brand-by{font-size:12px; color:var(--ink-faint);}
-  .metrics-row{display:flex; flex-wrap:wrap; gap:18px; justify-content:center; padding:4px 0;}
-  .metric{text-align:center; min-width:72px;}
-  .metric-val{font-size:18px; font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums;}
-  .metric-label{font-size:11px; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.03em; margin-top:2px;}
-  p.tested-as{font-size:13px; color:var(--ink-dim); text-align:center; margin:0 0 10px;}
-  p.tested-as strong{color:var(--ink);}
   footer{text-align:center; color:var(--ink-faint); font-size:12px; margin-top:24px;}
-  footer a{color:var(--accent);}
-  @media print{ body{background:#fff;} .card,.verdict{break-inside:avoid; border-color:#ccc;} }
+  @media print{ body{background:#fff;} .card,article.finding{break-inside:avoid; border-color:#ccc;} }
 </style>
 </head>
 <body>
@@ -779,74 +959,33 @@ export function toHTML(report) {
 
   <div class="card">
     <div class="top-gauges">${topGauges}</div>
+    <p class="legend">Scores out of 100 · 90+ Good · 50–89 Needs improvement · under 50 Poor · click a score to jump to its section</p>
   </div>
 
-  <div class="skill-desc">
-    This report checks six things on <strong>${esc(url)}</strong>: <strong>Security</strong> (headers,
-    cookie flags, HTTPS), <strong>Governance</strong> (what data and cookies the site itself sets in a
-    visitor's browser), <strong>Privacy</strong> (what third parties the site exposes visitors to, and
-    whether that's disclosed), <strong>Speed</strong> (Lighthouse performance, Core Web Vitals, video
-    weight), <strong>Accessibility</strong> (automated WCAG 2.1 A/AA checks), and <strong>SEO</strong>
-    (structured data — present, and actually filled in). Every finding below
-    says why it matters in plain terms and, where one can be generated, the actual code to fix it on
-    this site — not generic advice.${brand?.tagline ? `<br><br><strong>Why ${esc(brand.name || "we")} built this:</strong> ${esc(brand.tagline)}` : ""}
-    <br><br><span class="disclaimer">This is engineering guidance, not a certification or legal advice. Automated checks are defense in depth, not a guarantee — they catch real, common issues but not everything. For anything with real legal or compliance exposure (GDPR, CCPA, ADA, a security incident), a qualified professional should review it.</span>
-  </div>
-
-  <div class="verdict ${verdict}">
-    <div>
-      <h2>${VERDICT_TITLE[verdict]}</h2>
-      <p>${esc(verdictText)}</p>
-      <div class="target">${esc(url)}</div>
-    </div>
-    <div class="counts">
-      <span class="pill high">${counts.high} high</span>
-      <span class="pill medium">${counts.medium} medium</span>
-      <span class="pill low">${counts.low} low</span>
-    </div>
+  <div class="card verdict ${verdict}">
+    <div><h2>${VERDICT_TITLE[verdict]}</h2><p>${esc(VERDICT_SUMMARY[verdict](counts))}</p></div>
+    <div class="counts"><span class="pill high">${counts.high} high</span><span class="pill medium">${counts.medium} medium</span><span class="pill low">${counts.low} low</span></div>
   </div>
 
   <div class="card">
-    <h2>Fix this first</h2>
-    ${topFixes}
+    <h2>1 · What to do first</h2>
+    ${firstHTML}
   </div>
 
   <div class="card">
-    <h2>Speed detail (Core Web Vitals)</h2>
-    ${speedDetail}
+    <h2>2 · All issues (${findings.length})</h2>
+    ${allHTML}
   </div>
 
-  <div class="card">
-    <h2>All findings</h2>
-    ${findingsHTML}
+  <h2 class="part-title">3 · Section by section</h2>
+  ${sectionHTML}
+
+  <div class="card intro">
+    <strong>About this report.</strong> It checks seven things on ${esc(url)} — Security, Governance (data &amp; cookies), Privacy (third parties), Speed, Accessibility, Mobile and Schema — from the outside, the way any visitor's browser sees the site.${platform?.id && platform.id !== "unknown" ? ` The site is served by ${esc(platform.name)}, so fixes are written for it.` : ""} Your own code can't be seen from outside: for anything that lives in your project, the Claude skill (site-hardening-and-speed) finds the exact file and makes the change.${brand?.tagline ? `<br><br><strong>Why ${esc(brand.name || "we")} built this:</strong> ${esc(brand.tagline)}` : ""}
+    <span class="disclaimer">This is engineering guidance, not a certification or legal advice. Automated checks are defense in depth, not a guarantee — they catch real, common issues but not everything. For anything with real legal or compliance exposure (GDPR, CCPA, ADA, a security incident), a qualified professional should review it.</span>
   </div>
 
-  <div class="card">
-    <h2>Security checklist</h2>
-    ${headersChecklist}
-  </div>
-
-  <div class="card">
-    <h2>Governance (data &amp; cookies)</h2>
-    ${governanceSection}
-  </div>
-
-  <div class="card">
-    <h2>Privacy (third parties)</h2>
-    ${privacySection}
-  </div>
-
-  <div class="card">
-    <h2>SEO (structured data)</h2>
-    ${schemaSection}
-  </div>
-
-  <div class="card">
-    <h2>Accessibility</h2>
-    ${a11ySection}
-  </div>
-
-  <footer>Generated by <a href="https://github.com/amandamalavedev/website-precheck">website-precheck</a>${brand?.url ? ` · <a href="${esc(brand.url)}">${esc(brand.name)}</a>` : ""} — a free, open tool. Automated checks catch real issues but not everything; pair with a manual pass.<br>Not legal advice, not a certification of compliance — see the disclaimer above.${brand?.copyright ? `<br>${esc(brand.copyright)}` : ""}</footer>
+  <footer>Generated by <a href="https://github.com/amandamalavedev/website-precheck">website-precheck</a>${brand?.url ? ` · <a href="${esc(brand.url)}">${esc(brand.name)}</a>` : ""} — a free, open tool.${brand?.copyright ? `<br>${esc(brand.copyright)}` : ""}</footer>
 </div>
 </body>
 </html>`;
@@ -897,6 +1036,7 @@ if (isMain) {
       allowPrivate: flag(args, "allow-private"),
       skipLighthouse: flag(args, "skip-lighthouse"),
       skipA11y: flag(args, "skip-a11y"),
+      skipMobile: flag(args, "skip-mobile"),
       skipCookies: flag(args, "skip-cookies"),
       skipVideo: flag(args, "skip-video"),
       skipPrivacy: flag(args, "skip-privacy"),

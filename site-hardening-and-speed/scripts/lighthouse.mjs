@@ -102,6 +102,9 @@ export async function runLighthouse(rawUrl, {
   // shows the same problem twice under a different name.
   const metricOnlyIds = new Set(["largest-contentful-paint", "first-contentful-paint", "total-blocking-time", "cumulative-layout-shift", "speed-index", "server-response-time", "max-potential-fid", "interactive", "first-meaningful-paint"]);
   const skipModes = new Set(["notApplicable", "manual", "informative"]);
+  // Some audits (e.g. unused-css-rules on an inline <style> block) put source text where a URL goes —
+  // only genuinely URL-shaped values count, so no code snippet is ever built against stylesheet text.
+  const isUrlish = (u) => typeof u === "string" && u.length < 300 && !/[{}\n]/.test(u) && /^(https?:\/\/|\/|\.\.?\/|[\w.-]+\/[\w./-]+\.\w+$)/.test(u);
   const failing = Object.values(a)
     .filter((x) => x.score != null && x.score < 0.9 && !skipModes.has(x.scoreDisplayMode) && !metricOnlyIds.has(x.id))
     .map((x) => ({ x, saving: x.metricSavings ? Math.max(0, ...Object.values(x.metricSavings).map(Number).filter(Number.isFinite)) : 0, bytes: x.details?.overallSavingsBytes || 0 }))
@@ -113,7 +116,21 @@ export async function runLighthouse(rawUrl, {
       // Some audits (e.g. unused-css-rules on an inline <style> block) put the actual CSS/JS source
       // text in this field instead of a URL — reject anything that isn't genuinely URL-shaped so a
       // code snippet downstream never gets built against a chunk of someone's stylesheet by mistake.
-      urls: [...new Set(findItems(x.details).map((it) => it.url || it.source?.url).filter((u) => typeof u === "string" && u.length < 300 && !/[{}\n]/.test(u) && /^(https?:\/\/|\/|\.\.?\/|[\w.-]+\/[\w./-]+\.\w+$)/.test(u)))].slice(0, 3),
+      urls: [...new Set(findItems(x.details).map((it) => it.url || it.source?.url).filter(isUrlish))].slice(0, 3),
+      // per-file detail, so the report can say "logo.webp is 120 KiB, could be 12 KiB" instead of just
+      // naming the audit — size, potential saving, cache lifetime, source line, or the element itself
+      items: findItems(x.details)
+        .filter((it) => isUrlish(it.url || it.source?.url) || it.node?.snippet)
+        .slice(0, 6)
+        .map((it) => ({
+          url: isUrlish(it.url || it.source?.url) ? (it.url || it.source.url) : null,
+          line: it.source?.line != null ? it.source.line + 1 : null,
+          element: it.node?.snippet ? String(it.node.snippet).replace(/\s+/g, " ").slice(0, 160) : null,
+          totalBytes: Number.isFinite(it.totalBytes) ? it.totalBytes : null,
+          wastedBytes: Number.isFinite(it.wastedBytes) ? it.wastedBytes : null,
+          wastedMs: Number.isFinite(it.wastedMs) ? Math.round(it.wastedMs) : null,
+          cacheTtlMs: Number.isFinite(it.cacheLifetimeMs) ? it.cacheLifetimeMs : null,
+        })),
     }));
 
   // What was actually measured — never just say "mobile" or "4G": Lighthouse's own configSettings
