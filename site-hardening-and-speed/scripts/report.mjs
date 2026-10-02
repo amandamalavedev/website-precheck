@@ -922,7 +922,7 @@ if (isMain) {
 ────────────────────────────────────────────────────────────
   Your report is ready.
 
-  See the full report — paste this into your browser's address bar:
+  Paste this in your browser to see the full report:
     ${pathToFileURL(abs(files.html)).href}
 
   Or open this folder and double-click precheck-report.html:
