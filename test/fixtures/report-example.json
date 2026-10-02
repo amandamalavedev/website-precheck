@@ -1,0 +1,368 @@
+{
+  "tool": "website-precheck",
+  "version": "0.1.0",
+  "url": "https://example.com/",
+  "startedAt": "2026-10-02T23:10:37.679Z",
+  "finishedAt": "2026-10-02T23:10:59.311Z",
+  "scores": {
+    "performance": 100
+  },
+  "categoryScores": {
+    "Security": 18,
+    "Governance": 100,
+    "Privacy": 100,
+    "Speed": 100,
+    "Accessibility": 100,
+    "SEO": 0
+  },
+  "brand": null,
+  "headers": {
+    "url": "https://example.com/",
+    "finalUrl": "https://example.com/",
+    "status": 200,
+    "checks": [
+      {
+        "name": "content-security-policy",
+        "present": false,
+        "value": null,
+        "why": "Controls what can load/run — the big one. Lock script-src to 'self'.",
+        "severity": "high"
+      },
+      {
+        "name": "strict-transport-security",
+        "present": false,
+        "value": null,
+        "why": "Forces HTTPS (HSTS).",
+        "severity": "high"
+      },
+      {
+        "name": "x-content-type-options",
+        "present": false,
+        "value": null,
+        "why": "Stops MIME-sniffing. Should be: nosniff",
+        "severity": "medium"
+      },
+      {
+        "name": "x-frame-options",
+        "present": false,
+        "value": null,
+        "why": "Blocks clickjacking (or use CSP frame-ancestors).",
+        "severity": "medium"
+      },
+      {
+        "name": "referrer-policy",
+        "present": false,
+        "value": null,
+        "why": "Limits what you leak in the Referer header.",
+        "severity": "low"
+      },
+      {
+        "name": "permissions-policy",
+        "present": false,
+        "value": null,
+        "why": "Turns off camera/mic/geolocation etc.",
+        "severity": "low"
+      }
+    ],
+    "unwanted": [
+      {
+        "name": "x-powered-by",
+        "present": false,
+        "value": null,
+        "why": "Advertises your server software — turn it off."
+      },
+      {
+        "name": "server",
+        "present": true,
+        "value": "cloudflare",
+        "why": "If it names/versions the server, consider hiding it."
+      }
+    ],
+    "httpsRedirect": null,
+    "missing": [
+      "content-security-policy",
+      "strict-transport-security",
+      "x-content-type-options",
+      "x-frame-options",
+      "referrer-policy",
+      "permissions-policy"
+    ]
+  },
+  "lighthouse": {
+    "url": "https://example.com/",
+    "version": "12.8.2",
+    "form": "mobile",
+    "throttle": "simulate",
+    "runs": 1,
+    "scores": [
+      100
+    ],
+    "categoryScores": {
+      "performance": {
+        "title": "Performance",
+        "score": 100
+      }
+    },
+    "testConditions": {
+      "device": "moto g power (2022)",
+      "networkLabel": "Simulated Slow 4G",
+      "rttMs": 150,
+      "downloadKbps": 1475,
+      "uploadKbps": 675,
+      "cpuSlowdown": 4,
+      "screen": "412×823 @1.75x"
+    },
+    "metrics": {
+      "fcpMs": 797,
+      "lcpMs": 959,
+      "tbtMs": 48,
+      "cls": 0,
+      "speedIndexMs": 797,
+      "ttfbMs": 12
+    },
+    "lcpElement": "<p lang=\"ru\">",
+    "lcpPhases": [
+      {
+        "phase": "TTFB",
+        "ms": 608
+      },
+      {
+        "phase": "Load Delay",
+        "ms": 0
+      },
+      {
+        "phase": "Load Time",
+        "ms": 0
+      },
+      {
+        "phase": "Render Delay",
+        "ms": 351
+      }
+    ],
+    "failing": [
+      {
+        "id": "uses-long-cache-ttl",
+        "title": "Serve static assets with an efficient cache policy",
+        "displayValue": "1 resource found",
+        "metricSavingMs": null,
+        "bytes": null,
+        "urls": [
+          "https://example.com/s.js"
+        ]
+      },
+      {
+        "id": "cache-insight",
+        "title": "Use efficient cache lifetimes",
+        "displayValue": "Est savings of 1 KiB",
+        "metricSavingMs": null,
+        "bytes": null,
+        "urls": [
+          "https://example.com/s.js"
+        ]
+      },
+      {
+        "id": "network-dependency-tree-insight",
+        "title": "Network dependency tree",
+        "displayValue": null,
+        "metricSavingMs": null,
+        "bytes": null,
+        "urls": []
+      }
+    ],
+    "reportPath": "C:\\Users\\amand\\AppData\\Local\\Temp\\claude\\c--Users-amand-dr-nature-campaign\\64b5149c-3663-405f-a263-4baf3dced472\\scratchpad\\lighthouse-reports\\lh-2026-10-02T23-10-37-mobile-1.json"
+  },
+  "a11y": {
+    "url": "https://example.com/",
+    "engine": "4.10.2",
+    "full": false,
+    "violations": [],
+    "total": 0,
+    "byImpact": {},
+    "passes": 10,
+    "incomplete": [
+      "bypass"
+    ]
+  },
+  "cookies": {
+    "url": "https://example.com/",
+    "isHttps": true,
+    "cookies": []
+  },
+  "video": {
+    "url": "https://example.com/",
+    "thresholdKiB": 2000,
+    "videos": [],
+    "heavy": []
+  },
+  "privacy": {
+    "url": "https://example.com/",
+    "thirdParty": [],
+    "trackers": [],
+    "hasPrivacyLink": false
+  },
+  "schema": {
+    "url": "https://example.com/",
+    "hasSchema": false,
+    "blocks": [],
+    "malformed": 0,
+    "overallScore": null
+  },
+  "findings": [
+    {
+      "severity": "high",
+      "category": "Security",
+      "title": "Missing content-security-policy header",
+      "label": "Script & content control (CSP)",
+      "why": "Controls what can load/run — the big one. Lock script-src to 'self'.",
+      "fix": "Add the `content-security-policy` response header.",
+      "meta": "content-security-policy",
+      "key": "header:content-security-policy",
+      "plain": "Your site doesn't tell browsers which scripts are allowed to run on it.",
+      "impact": "If an attacker ever sneaks code onto a page — through a comment box, an ad, or a compromised third-party script — nothing stops it from running. It could steal visitor data or deface the page, and visitors would have no way to tell.",
+      "fixPlain": "Add a Content-Security-Policy header that only allows scripts from your own domain.",
+      "code": "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    },
+    {
+      "severity": "high",
+      "category": "Security",
+      "title": "Missing strict-transport-security header",
+      "label": "Force-encrypt connections (HSTS)",
+      "why": "Forces HTTPS (HSTS).",
+      "fix": "Add the `strict-transport-security` response header.",
+      "meta": "strict-transport-security",
+      "key": "header:strict-transport-security",
+      "plain": "Browsers aren't told to always use the encrypted (https://) version of your site.",
+      "impact": "A visitor's very first request — before HTTPS even kicks in, say on public wifi — could be quietly downgraded and read or tampered with by someone else on the network.",
+      "fixPlain": "Add a Strict-Transport-Security header so browsers go straight to HTTPS for your domain from then on.",
+      "code": "Strict-Transport-Security: max-age=31536000; includeSubDomains"
+    },
+    {
+      "severity": "medium",
+      "category": "Security",
+      "title": "Missing x-content-type-options header",
+      "label": "File-type guessing lockdown",
+      "why": "Stops MIME-sniffing. Should be: nosniff",
+      "fix": "Add the `x-content-type-options` response header.",
+      "meta": "x-content-type-options",
+      "key": "header:x-content-type-options",
+      "plain": "Browsers are left to guess what kind of file they're loading instead of trusting what you specify.",
+      "impact": "In older browsers, a malicious file disguised as an image could get executed as a script.",
+      "fixPlain": "Add X-Content-Type-Options: nosniff.",
+      "code": "X-Content-Type-Options: nosniff"
+    },
+    {
+      "severity": "medium",
+      "category": "Security",
+      "title": "Missing x-frame-options header",
+      "label": "Clickjacking protection",
+      "why": "Blocks clickjacking (or use CSP frame-ancestors).",
+      "fix": "Add the `x-frame-options` response header.",
+      "meta": "x-frame-options",
+      "key": "header:x-frame-options",
+      "plain": "Nothing stops another website from loading your page inside an invisible frame.",
+      "impact": "This enables “clickjacking” — e.g. a fake “claim your prize” page could hide your real donate or login button underneath, so a visitor thinks they're clicking one thing and actually clicks another.",
+      "fixPlain": "Add an X-Frame-Options header (or a CSP frame-ancestors rule) so your pages can't be framed by other sites.",
+      "code": "X-Frame-Options: DENY"
+    },
+    {
+      "severity": "medium",
+      "category": "Speed",
+      "title": "Serve static assets with an efficient cache policy",
+      "label": "Serve static assets with an efficient cache policy",
+      "why": "Measured: 1 resource found",
+      "fix": "See the Lighthouse audit id for guidance.",
+      "meta": "uses-long-cache-ttl",
+      "key": "lh:uses-long-cache-ttl",
+      "urls": [
+        "https://example.com/s.js"
+      ],
+      "savingMs": null,
+      "savingKiB": null,
+      "plain": "Returning visitors re-download files that haven't changed.",
+      "impact": "Every repeat visit feels slower than it needs to, and costs you bandwidth.",
+      "fixPlain": "Tell the browser to cache images, CSS, and JS files for longer.",
+      "tool": "Set Cache-Control: public, max-age=31536000, immutable on static assets. Netlify/Vercel: a _headers or vercel.json rule; Express: app.use(express.static(dir, { maxAge: '1y', immutable: true })).",
+      "code": "# _headers file (Netlify / Cloudflare Pages):\n/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n\n# Express:\napp.use(express.static(dir, { maxAge: \"1y\", immutable: true }));\n\n# Applies to, right now:\n#   s.js"
+    },
+    {
+      "severity": "medium",
+      "category": "Speed",
+      "title": "Network dependency tree",
+      "label": "Network dependency tree",
+      "why": "Lighthouse flagged this as a performance opportunity.",
+      "fix": "See the Lighthouse audit id for guidance.",
+      "meta": "network-dependency-tree-insight",
+      "key": "lh:network-dependency-tree-insight",
+      "urls": [],
+      "savingMs": null,
+      "savingKiB": null,
+      "plain": "Loading one file forces the browser to wait, then request another, then another, in a chain.",
+      "impact": "Each link in that chain adds delay before the page is usable.",
+      "fixPlain": "Shorten the chain — preload key resources instead of letting the browser discover them late.",
+      "tool": "Chrome DevTools > Network tab, enable the waterfall view, to see the exact dependency chain.",
+      "code": null
+    },
+    {
+      "severity": "medium",
+      "category": "SEO",
+      "title": "No structured data (JSON-LD) found",
+      "label": "Structured data",
+      "why": "No <script type=\"application/ld+json\"> block was found on the page.",
+      "fix": "Add JSON-LD structured data for the page's type (Organization, LocalBusiness, Article, etc.).",
+      "key": "schema:missing",
+      "plain": "No structured data (JSON-LD) found",
+      "impact": "No <script type=\"application/ld+json\"> block was found on the page.",
+      "fixPlain": "Add JSON-LD structured data for the page's type (Organization, LocalBusiness, Article, etc.).",
+      "code": null
+    },
+    {
+      "severity": "low",
+      "category": "Security",
+      "title": "Missing referrer-policy header",
+      "label": "Link-click privacy",
+      "why": "Limits what you leak in the Referer header.",
+      "fix": "Add the `referrer-policy` response header.",
+      "meta": "referrer-policy",
+      "key": "header:referrer-policy",
+      "plain": "When someone clicks a link off your site, their browser can leak the full page address they came from to whatever site they land on.",
+      "impact": "If any of your URLs ever contain something sensitive — a tracking token, a draft page name — that leaks to outside sites.",
+      "fixPlain": "Add a Referrer-Policy header (strict-origin-when-cross-origin is a safe default).",
+      "code": "Referrer-Policy: strict-origin-when-cross-origin"
+    },
+    {
+      "severity": "low",
+      "category": "Security",
+      "title": "Missing permissions-policy header",
+      "label": "Camera/mic/location lockdown",
+      "why": "Turns off camera/mic/geolocation etc.",
+      "fix": "Add the `permissions-policy` response header.",
+      "meta": "permissions-policy",
+      "key": "header:permissions-policy",
+      "plain": "Browser features like camera, microphone, and location aren't explicitly turned off for your site.",
+      "impact": "A bug or a bad third-party script embedded on your page has access to more than it needs.",
+      "fixPlain": "Add a Permissions-Policy header that disables the features you don't use.",
+      "code": "Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()"
+    },
+    {
+      "severity": "low",
+      "category": "Security",
+      "title": "server header reveals server details",
+      "label": "Server software disclosure",
+      "why": "If it names/versions the server, consider hiding it.",
+      "fix": "Remove or blank the `server` header (e.g. `app.disable('x-powered-by')` in Express).",
+      "meta": "server",
+      "key": "unwanted:server",
+      "plain": "Your server is naming or versioning itself in every response.",
+      "impact": "Same risk as above — it narrows down what an attacker needs to guess.",
+      "fixPlain": "Blank or shorten the Server header at your server or platform edge.",
+      "code": null
+    }
+  ],
+  "counts": {
+    "high": 2,
+    "medium": 5,
+    "low": 3
+  },
+  "verdict": "urgent",
+  "skipped": []
+}

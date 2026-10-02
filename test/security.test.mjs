@@ -393,3 +393,20 @@ test("F11: every script a skill shares with lib/ is byte-identical to lib/", asy
   }
   assert.deepEqual(drift, [], "copy lib/ into these after changing it: " + drift.join(", "));
 });
+
+// ── F12: the HTML report must say which website it assessed, up top (found 2026-10-02) ──────────────
+// A forwarded or printed report that only said "Website Precheck" couldn't be tied to a site.
+test("F12: the HTML report names the assessed site in its header, escaped", async () => {
+  const { toHTML } = await import("../lib/report.mjs");
+  const report = JSON.parse(readFileSync(join(HERE, "fixtures", "report-example.json"), "utf8"));
+  const html = toHTML(report);
+  const top = html.slice(html.indexOf("<body"), html.indexOf('class="top-gauges"'));
+  assert.match(top, /class="assessed-lbl">Website assessed</);
+  assert.match(top, /class="assessed-site"[^>]*>example\.com</);
+  assert.ok(top.includes("https://example.com/"), "full URL shown under the site name");
+
+  // a hostile URL in the report data can't break out of the attribute or inject markup
+  const evil = { ...report, url: 'https://example.com/"><script>alert(1)</script>' };
+  const out = toHTML(evil);
+  assert.ok(!out.includes("<script>alert(1)</script>"), "URL must be HTML-escaped");
+});
