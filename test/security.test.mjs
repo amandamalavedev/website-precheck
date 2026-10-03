@@ -466,3 +466,70 @@ test("F14: contrast fix returns a colour that actually passes; schema name is cl
   const p = profileFromHtml(`<title>Acme &amp; Co · Widgets for everyone</title><meta name="description" content="We make widgets.">`, "https://acme.test/");
   assert.match(schemaFor(p).code, /"name": "Acme & Co"/);
 });
+
+// ── F15: whole-site report — every page is found and checked; a leak on an inner page is caught ──
+test("F15: page finder keeps same-site pages only and folds /index.html into /", async () => {
+  const { extractLinks, normalizePageUrl } = await import("../lib/crawl.mjs");
+  const links = extractLinks(`<a href="/">h</a><a href="about.html">a</a><a href="/about.html#team">a2</a><a href="https://other.test/x">o</a>
+    <a href="mailto:x@site.test">m</a><a href="/brochure.pdf">p</a><a href="javascript:void(0)">j</a><a href=/build?ref=nav>b</a><a href="index.html">i</a>`, "https://site.test/");
+  assert.deepEqual(links, ["https://site.test/", "https://site.test/about.html", "https://site.test/build"]);
+  assert.equal(normalizePageUrl("https://site.test/blog/index.html?x=1#y"), "https://site.test/blog/");
+});
+
+test("F15: a key in a data file loaded only by an inner page fails the SITE, naming that page and file", async () => {
+  const { discoverPages } = await import("../lib/crawl.mjs");
+  const { readPageProfile, securityChecklist } = await import("../lib/specifics.mjs");
+  const { mergeChecklists } = await import("../lib/report.mjs");
+  const fakeKey = "sk-" + "ant-" + "api03-" + "Zq7".repeat(12);      // built at runtime so no real-looking key sits in the repo
+  const files = {
+    "/": `<html><body><a href="/about">About</a><a href="/contact.html">Contact</a></body></html>`,
+    "/about": `<html><body><a href="/">Home</a><script src="/assets/app.js"></script></body></html>`,
+    "/contact.html": `<html><body>Contact</body></html>`,
+    "/assets/app.js": `fetch("data/team.json").then(r => r.json());`,
+    "/data/team.json": JSON.stringify({ team: [{ name: "Pat Lee", email: "pat.lee@site-staff.test" }], apiKey: fakeKey }),
+  };
+  const srv = createServer((q, r) => {
+    const body = files[q.url];
+    if (!body) { r.writeHead(404); return r.end(); }
+    r.writeHead(200, { "content-type": q.url.endsWith(".js") ? "text/javascript" : q.url.endsWith(".json") ? "application/json" : "text/html" });
+    r.end(body);
+  });
+  await new Promise((ok) => srv.listen(0, "127.0.0.1", ok));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const found = await discoverPages(base + "/", { allowPrivate: true });
+    assert.deepEqual(found.pages.map((u) => new URL(u).pathname), ["/", "/about", "/contact.html"]);
+    const cache = new Map();
+    const perPage = [];
+    for (const u of found.pages) {
+      const profile = await readPageProfile(u, { allowPrivate: true });
+      const checklist = await securityChecklist({ url: u, headers: null, cookies: null, privacy: null, profile, platform: { id: "unknown", name: "x" }, allowPrivate: true, probeCache: cache });
+      for (const i of checklist.items) i.section = "Security";
+      perPage.push({ path: new URL(u).pathname, checklist });
+    }
+    const site = mergeChecklists(perPage);
+    const secrets = site.items.find((i) => i.id === "secrets-in-code");
+    assert.equal(secrets.status, "fail");
+    assert.deepEqual(secrets.pages, ["/about"]);
+    assert.match(secrets.detail, /data\/team\.json/);
+    assert.ok(!secrets.detail.includes(fakeKey), "the key must be masked in the report");
+    const emails = site.items.find((i) => i.id === "emails-in-code");
+    assert.equal(emails.status, "warn");
+    assert.match(emails.detail, /pa…@site-staff\.test/);
+  } finally { srv.close(); }
+});
+
+test("F15: the same footer element on every page is listed once, with its pages; site issues merge", async () => {
+  const { mergeFindings } = await import("../lib/report.mjs");
+  const tap = (extra = []) => ({ key: "mobile:tap-targets", category: "Mobile", severity: "medium", title: "x", plain: "x", count: 1 + extra.length,
+    elements: [{ target: "footer a.privacy", summary: "16px tall" }, ...extra], code: "footer a.privacy { min-height: 24px; }" });
+  const merged = mergeFindings([
+    { path: "/", findings: [tap()] },
+    { path: "/about", findings: [tap([{ target: "a.cwe", summary: "17px tall" }])] },
+  ]);
+  assert.equal(merged.length, 1);
+  assert.deepEqual(merged[0].pages, ["/", "/about"]);
+  assert.equal(merged[0].elements.length, 2);
+  assert.deepEqual(merged[0].elements.find((e) => e.target === "footer a.privacy").pages, ["/", "/about"]);
+  assert.match(merged[0].plain, /^2 buttons\/links/);
+});

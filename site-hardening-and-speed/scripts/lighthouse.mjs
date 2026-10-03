@@ -42,6 +42,7 @@ export async function runLighthouse(rawUrl, {
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const reports = [];
+  const failedRuns = [];
   for (let i = 1; i <= runs; i++) {
     const outPath = join(resolvedOutDir, `lh-${stamp}-${form}-${i}.json`);
     const lhArgs = [
@@ -55,17 +56,31 @@ export async function runLighthouse(rawUrl, {
     if (form === "desktop") lhArgs.push("--preset=desktop");
     if (throttle === "none") lhArgs.push("--throttling-method=provided");
     else lhArgs.push(`--throttling-method=${throttle}`);
-    process.stderr.write(`Run ${i}/${runs}… `);
-    // shell:false always. On Windows we invoke node + npx-cli.js (a .js, not a .cmd); elsewhere npx.
-    const r = useNpxCli
-      ? spawnSync(process.execPath, [npxCli, ...lhArgs], { encoding: "utf8", shell: false })
-      : spawnSync("npx", lhArgs, { encoding: "utf8", shell: false });
-    if (!existsSync(outPath)) {
-      throw new Error(`Lighthouse failed (exit ${r.status}).\n${(r.stderr || "").slice(-1500)}\nIf Chrome isn't found, set CHROME_PATH to the Chrome executable.`);
+    // A run Lighthouse itself couldn't measure (e.g. NO_NAVSTART: "something went wrong recording the
+    // trace") comes back with a null score — it is NOT a score of 0. Retry it once; if it fails again,
+    // leave it out of the median rather than dragging the page to 0 (found 2026-10-02 on /training).
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      process.stderr.write(attempt === 1 ? `Run ${i}/${runs}… ` : "retrying… ");
+      // shell:false always. On Windows we invoke node + npx-cli.js (a .js, not a .cmd); elsewhere npx.
+      const r = useNpxCli
+        ? spawnSync(process.execPath, [npxCli, ...lhArgs], { encoding: "utf8", shell: false })
+        : spawnSync("npx", lhArgs, { encoding: "utf8", shell: false });
+      if (!existsSync(outPath)) {
+        throw new Error(`Lighthouse failed (exit ${r.status}).\n${(r.stderr || "").slice(-1500)}\nIf Chrome isn't found, set CHROME_PATH to the Chrome executable.`);
+      }
+      const lhr = JSON.parse(readFileSync(outPath, "utf8"));
+      if (lhr.runtimeError || lhr.categories.performance?.score == null) {
+        failedRuns.push(lhr.runtimeError?.code || "no score");
+        process.stderr.write(`couldn't measure (${lhr.runtimeError?.code || "no score"}) `);
+        continue;
+      }
+      reports.push({ path: outPath, lhr });
+      process.stderr.write(`score ${Math.round(lhr.categories.performance.score * 100)}\n`);
+      break;
     }
-    const lhr = JSON.parse(readFileSync(outPath, "utf8"));
-    reports.push({ path: outPath, lhr });
-    process.stderr.write(`score ${Math.round((lhr.categories.performance?.score ?? 0) * 100)}\n`);
+  }
+  if (!reports.length) {
+    throw new Error(`Lighthouse couldn't measure this page (${[...new Set(failedRuns)].join(", ")} — Lighthouse's own recording failed; running it again usually works). No speed score is given rather than a wrong one.`);
   }
 
   // Median by performance score
@@ -149,7 +164,7 @@ export async function runLighthouse(rawUrl, {
     : cs.throttlingMethod === "devtools" ? "DevTools-applied throttling" : cs.throttlingMethod === "provided" ? "No throttling (raw connection)" : "Simulated throttling";
 
   return {
-    url: lhr.finalDisplayedUrl || url, version: lhr.lighthouseVersion, form, throttle, runs,
+    url: lhr.finalDisplayedUrl || url, version: lhr.lighthouseVersion, form, throttle, runs: reports.length, failedRuns,
     scores: reports.map((r) => Math.round((r.lhr.categories.performance?.score ?? 0) * 100)),
     categoryScores,
     testConditions: {

@@ -16,7 +16,8 @@ import { checkVideoAssets } from "./media.mjs";
 import { checkPrivacy } from "./privacy.mjs";
 import { checkSchema } from "./schema.mjs";
 import { checkMobile } from "./mobile.mjs";
-import { detectPlatform, readPageProfile, buildCsp, schemaFor, contrastFix, securityChecklist } from "./specifics.mjs";
+import { detectPlatform, readPageProfile, buildCsp, schemaFor, pageSchemaFor, contrastFix, securityChecklist } from "./specifics.mjs";
+import { discoverPages } from "./crawl.mjs";
 
 const SEV_RANK = { high: 0, medium: 1, low: 2 };
 const SEV_LABEL = { high: "High", medium: "Medium", low: "Low" };
@@ -44,7 +45,7 @@ const CHECK_PROBLEM = {
 const CATEGORY_RANK = { Security: 0, Privacy: 1, Governance: 2, Accessibility: 3, Mobile: 4, Speed: 5, Schema: 6 };
 /** Order findings for "Fix this first": severity, then category, then how much of the page it affects. */
 export function rankFindings(findings) {
-  const reach = (f) => (f.count || 0) + (f.urls?.length || 0) + (f.savingMs ? f.savingMs / 100 : 0);
+  const reach = (f) => (f.pages?.length || 0) * 5 + (f.count || 0) + (f.urls?.length || 0) + (f.savingMs ? f.savingMs / 100 : 0);
   return findings.sort((a, b) =>
     (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9)
     || (CATEGORY_RANK[a.category] ?? 9) - (CATEGORY_RANK[b.category] ?? 9)
@@ -288,9 +289,57 @@ function generateCode(f, siteUrl) {
 
 // ---- Run every check that succeeds; a failed optional check becomes a "skipped" note, not a crash
 // for the whole report — a site with no Chrome available should still get its header findings. ----
-export async function runReport(rawUrl, {
+// ---- Steps shared by the one-page run and the whole-site merge ----
+const SEV_WEIGHT = { high: 25, medium: 10, low: 4 };
+
+/** Failed/warned SECURITY checklist items → Security findings (one source for score, ✓/✗ list and fixes). */
+function securityFindingsFrom(checklist) {
+  return checklist.items.filter((i) => i.section === "Security" && i.status !== "pass").map((i) => ({
+    severity: i.status === "fail" ? (CRITICAL_CHECKS.has(i.id) ? "high" : "medium") : "low",
+    category: "Security", key: `check:${i.id}`, title: CHECK_PROBLEM[i.id] || i.label, label: i.label,
+    plain: CHECK_PROBLEM[i.id] || i.label, impact: i.detail, fixPlain: i.where || "", why: i.detail, fix: i.where || "",
+    where: i.where || null, code: i.code ?? null, checkStatus: i.status, ...(i.pages ? { pages: i.pages } : {}),
+  }));
+}
+
+function securityScore(checklist) {
+  return Math.max(0, 100 - checklist.items.filter((i) => i.section === "Security")
+    .reduce((s, i) => s + (i.status === "fail" ? (CRITICAL_CHECKS.has(i.id) ? 25 : 10) : i.status === "warn" ? 4 : 0), 0));
+}
+
+/** Plain-English fields, ready-to-paste code, de-duplication and ranking — in place. */
+function finishFindings(findings, url) {
+  // Fill in plain-English fields only where a finding hasn't already written its own.
+  for (const f of findings) { const t = translateFinding(f.key, f); for (const k of Object.keys(t)) if (f[k] == null || f[k] === "") f[k] = t[k]; }
+  // Real, ready-to-paste code comes after translation so a dictionary hit's `tool` prose and the
+  // generated code can sit side by side — code wins the spot in the card; tool text becomes context.
+  for (const f of findings) if (f.code === undefined) f.code = generateCode(f, url);
+  // Lighthouse 12 sometimes fires both a legacy audit id and its newer "Insight" replacement for
+  // the same underlying problem (e.g. uses-long-cache-ttl + cache-insight) — same translated text,
+  // same files, different id. Dedupe on the content actually shown, not the id, so the reader never
+  // sees the identical card twice.
+  const seen = new Set();
+  const deduped = findings.filter((f) => {
+    const dupeKey = `${f.category}|${f.plain}|${(f.urls || []).join(",")}`;
+    if (seen.has(dupeKey)) return false;
+    seen.add(dupeKey);
+    return true;
+  });
+  findings.length = 0;
+  findings.push(...deduped);
+  rankFindings(findings);
+  return findings;
+}
+
+const countsOf = (findings) => ({ high: findings.filter((f) => f.severity === "high").length, medium: findings.filter((f) => f.severity === "medium").length, low: findings.filter((f) => f.severity === "low").length });
+const verdictOf = (counts) => (counts.high > 0 ? "urgent" : counts.medium > 0 ? "attention" : "good");
+
+// One page, every check. `role: "inner"` marks a page other than the one the report started from (its
+// schema suggestion is a WebPage block, not the Organization); `probeCache` shares site-wide probes
+// (/.git, /.env, security.txt…) across pages so a multi-page run asks for each address once.
+async function runPageReport(rawUrl, {
   allowPrivate = false, skipLighthouse = false, skipA11y = false, skipCookies = false, skipVideo = false, skipPrivacy = false, skipSchema = false, skipMobile = false,
-  lighthouseRuns = 3, lighthouseForm = "mobile", outDir = "lighthouse-reports", brand = null,
+  lighthouseRuns = 3, lighthouseForm = "mobile", outDir = "lighthouse-reports", brand = null, role = "home", probeCache = null,
 } = {}) {
   const url = await assertSafeUrl(rawUrl, { allowPrivate }); // fail fast, before running anything
   const startedAt = new Date().toISOString();
@@ -474,7 +523,19 @@ export async function runReport(rawUrl, {
   if (!skipSchema) {
     try {
       schema = await checkSchema(url, { allowPrivate });
-      if (!schema.hasSchema) {
+      if (!schema.hasSchema && role === "inner") {
+        const gen = profile ? pageSchemaFor(profile) : null;
+        findings.push({
+          severity: "low", category: "Schema", title: "No structured data (JSON-LD) on this page",
+          label: "Structured data", why: "No <script type=\"application/ld+json\"> block was found on the page.",
+          fix: "Add the WebPage block below.", key: "schema:missing-inner",
+          plain: "Inner pages have no structured data.",
+          impact: "Search engines and AI answer engines can still read your home page's details, but they can't tell what each of these pages is about or that it belongs to your site.",
+          fixPlain: gen ? `Paste a WebPage block into each page's <head>, filled in from that page's own title and description${gen.missing.length ? ` — add ${gen.missing.join(", ")}` : ""}.` : "Add a WebPage JSON-LD block to each page.",
+          where: "Inside <head> on each page listed. Check it afterwards at search.google.com/test/rich-results",
+          code: gen ? gen.code : null,
+        });
+      } else if (!schema.hasSchema) {
         const gen = profile ? schemaFor(profile) : null;
         findings.push({
           severity: "medium", category: "Schema", title: "No structured data (JSON-LD) found",
@@ -526,51 +587,21 @@ export async function runReport(rawUrl, {
   // Cookie and tracker items belong to the Governance and Privacy sections (which have their own findings).
   let checklist = null;
   try {
-    checklist = await securityChecklist({ url, headers, cookies, privacy, profile, platform, allowPrivate });
+    checklist = await securityChecklist({ url, headers, cookies, privacy, profile, platform, allowPrivate, probeCache });
     const SECTION_OF = { cookies: "Governance", trackers: "Privacy", "privacy-link": "Privacy" };
     for (const i of checklist.items) i.section = SECTION_OF[i.id] || "Security";
-    for (const i of checklist.items) {
-      if (i.section !== "Security" || i.status === "pass") continue;
-      findings.push({
-        severity: i.status === "fail" ? (CRITICAL_CHECKS.has(i.id) ? "high" : "medium") : "low",
-        category: "Security", key: `check:${i.id}`, title: CHECK_PROBLEM[i.id] || i.label, label: i.label,
-        plain: CHECK_PROBLEM[i.id] || i.label, impact: i.detail, fixPlain: i.where || "", why: i.detail, fix: i.where || "",
-        where: i.where || null, code: i.code ?? null, checkStatus: i.status,
-      });
-    }
+    findings.push(...securityFindingsFrom(checklist));
   } catch (e) { skipped.push({ check: "checklist", reason: e.message }); }
 
-  // Fill in plain-English fields only where a finding hasn't already written its own.
-  for (const f of findings) { const t = translateFinding(f.key, f); for (const k of Object.keys(t)) if (f[k] == null || f[k] === "") f[k] = t[k]; }
-  // Real, ready-to-paste code comes after translation so a dictionary hit's `tool` prose and the
-  // generated code can sit side by side — code wins the spot in the card; tool text becomes context.
-  for (const f of findings) if (f.code === undefined) f.code = generateCode(f, url);
-
-  // Lighthouse 12 sometimes fires both a legacy audit id and its newer "Insight" replacement for
-  // the same underlying problem (e.g. uses-long-cache-ttl + cache-insight) — same translated text,
-  // same files, different id. Dedupe on the content actually shown, not the id, so the reader never
-  // sees the identical card twice.
-  const seen = new Set();
-  const deduped = findings.filter((f) => {
-    const dupeKey = `${f.category}|${f.plain}|${(f.urls || []).join(",")}`;
-    if (seen.has(dupeKey)) return false;
-    seen.add(dupeKey);
-    return true;
-  });
-  findings.length = 0;
-  findings.push(...deduped);
-
-  rankFindings(findings);
-  const counts = { high: findings.filter((f) => f.severity === "high").length, medium: findings.filter((f) => f.severity === "medium").length, low: findings.filter((f) => f.severity === "low").length };
-  const verdict = counts.high > 0 ? "urgent" : counts.medium > 0 ? "attention" : "good";
+  finishFindings(findings, url);
+  const counts = countsOf(findings);
+  const verdict = verdictOf(counts);
 
   // One score per section; how each is calculated is spelled out in the report (SCORE_METHOD) so the
   // number is never a mystery. null = that check didn't run (shown as "not checked", never as 0 or 100).
-  const SEV_WEIGHT = { high: 25, medium: 10, low: 4 };
   const deductionScore = (cat) => Math.max(0, 100 - findings.filter((f) => f.category === cat).reduce((sum, f) => sum + (SEV_WEIGHT[f.severity] || 0), 0));
-  const secItems = checklist ? checklist.items.filter((i) => i.section === "Security") : [];
   const categoryScores = {
-    Security: checklist ? Math.max(0, 100 - secItems.reduce((s, i) => s + (i.status === "fail" ? (CRITICAL_CHECKS.has(i.id) ? 25 : 10) : i.status === "warn" ? 4 : 0), 0)) : (headers ? deductionScore("Security") : null),
+    Security: checklist ? securityScore(checklist) : (headers ? deductionScore("Security") : null),
     Governance: cookies ? deductionScore("Governance") : null,
     Privacy: privacy ? deductionScore("Privacy") : null,
     Speed: lighthouse ? (lighthouse.categoryScores.performance?.score ?? null) : null,
@@ -580,13 +611,179 @@ export async function runReport(rawUrl, {
   };
 
   return {
-    tool: "website-precheck", version: "0.1.1", url, startedAt, finishedAt: new Date().toISOString(),
+    tool: "website-precheck", version: "0.2.0", url, startedAt, finishedAt: new Date().toISOString(),
     scores: lighthouse ? Object.fromEntries(Object.entries(lighthouse.categoryScores).map(([k, v]) => [k, v.score])) : null,
     categoryScores, brand, platform,
     page: profile ? { origins: profile.origins, inlineScripts: profile.inlineScriptHashes.length, lang: profile.lang } : null,
     checklist, mobile,
     headers, lighthouse, a11y, cookies, video, privacy, schema, findings, counts, verdict, skipped,
   };
+}
+
+// ============================= Whole site =============================
+// `runReport` checks every page it can find (following the site's own links, up to maxPages), then merges:
+// an issue on several pages becomes ONE finding that names its pages; the same header/footer element on
+// every page is listed once. Site scores: Security from the merged checklist (a check that fails on any
+// page fails for the site), Governance/Privacy = the lowest page (one bad page is a site problem), and
+// Speed/Accessibility/Mobile/Schema = the average of the pages, each page's own score in "Page by page".
+
+const pathOf = (u) => { try { const x = new URL(u); return x.pathname + x.search; } catch { return String(u); } };
+const listPages = (paths) => (paths.length <= 6 ? paths.join(", ") : `${paths.slice(0, 6).join(", ")} and ${paths.length - 6} more`);
+const STATUS_RANK = { fail: 0, warn: 1, pass: 2 };
+
+function pageSummary(r) {
+  return {
+    url: r.url, path: pathOf(r.url), categoryScores: r.categoryScores, counts: r.counts, verdict: r.verdict,
+    metrics: r.lighthouse?.metrics ? { lcpMs: r.lighthouse.metrics.lcpMs, cls: r.lighthouse.metrics.cls, tbtMs: r.lighthouse.metrics.tbtMs } : null,
+    lighthouseRuns: r.lighthouse?.runs ?? null,
+    findings: r.findings.map((f) => ({ key: f.key || `${f.category}|${f.plain}`, severity: f.severity, category: f.category, plain: f.plain })),
+    skipped: r.skipped,
+  };
+}
+
+/** One checklist for the site: each item's worst status across pages, naming the pages where it failed. */
+export function mergeChecklists(list) {
+  const byId = new Map();
+  for (const { path, checklist } of list) {
+    if (!checklist) continue;
+    for (const i of checklist.items) { if (!byId.has(i.id)) byId.set(i.id, []); byId.get(i.id).push({ ...i, path }); }
+  }
+  const distinct = (arr, k) => [...new Map(arr.map((i) => [i[k] ?? "", i])).values()];
+  const items = [];
+  for (const [id, inst] of byId) {
+    const worst = [...inst].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status])[0];
+    const bad = inst.filter((i) => i.status !== "pass");
+    let detail;
+    const scannedAll = inst.some((i) => i.scanned) ? [...new Set(inst.flatMap((i) => i.scanned || []))] : null;
+    if (!bad.length && scannedAll) {
+      const files = scannedAll.map((u) => (/^https?:/.test(u) ? pathOf(u.replace(/ \(inline scripts\)$/, "")) + (/\(inline scripts\)$/.test(u) ? " (inline)" : "") : u));
+      const what = { "source-maps": "public source maps", "secrets-in-code": "API keys, tokens, private keys and hard-coded passwords", "emails-in-code": "email addresses" }[id] || "problems";
+      detail = `Checked on all ${inst.length} pages: ${files.length} file${files.length === 1 ? "" : "s"} scanned for ${what} (${files.slice(0, 15).join(", ")}${files.length > 15 ? ` and ${files.length - 15} more` : ""}) — none found.`;
+    } else if (!bad.length) {
+      const ds = distinct(inst, "detail");
+      detail = ds.length === 1 ? (inst.length > 1 ? `${ds[0].detail} (checked on all ${inst.length} pages)` : ds[0].detail) : `Passed on all ${inst.length} pages. On ${inst[0].path}: ${inst[0].detail}`;
+    } else {
+      const ds = distinct(bad, "detail");
+      detail = ds.length === 1 && bad.length === inst.length ? ds[0].detail
+        : ds.map((d) => `On ${listPages(bad.filter((b) => b.detail === d.detail).map((b) => b.path))}: ${d.detail}`).join("  ·  ");
+    }
+    const codes = distinct(bad.filter((b) => b.code), "code");
+    items.push({
+      id, label: worst.label, section: worst.section, status: worst.status, detail,
+      ...(worst.where ? { where: worst.where } : {}),
+      ...(codes.length ? { code: codes.map((c) => c.code).join("\n\n") } : {}),
+      pages: bad.map((b) => b.path), checkedOn: inst.length,
+    });
+  }
+  const counts = { pass: items.filter((i) => i.status === "pass").length, warn: items.filter((i) => i.status === "warn").length, fail: items.filter((i) => i.status === "fail").length };
+  return { items, counts, allMissingHeaders: list.find((l) => l.checklist)?.checklist.allMissingHeaders ?? null };
+}
+
+/** Findings from every page → one finding per problem, with the pages it's on. Security check findings are
+ *  rebuilt from the merged checklist instead, so they're skipped here. */
+export function mergeFindings(perPage) {
+  const groups = new Map();
+  for (const { path, findings } of perPage) for (const f of findings) {
+    if (f.category === "Security" && String(f.key || "").startsWith("check:")) continue;
+    const k = f.key || `${f.category}|${f.plain}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push({ f, path });
+  }
+  const out = [];
+  for (const inst of groups.values()) {
+    inst.sort((a, b) => SEV_RANK[a.f.severity] - SEV_RANK[b.f.severity]);
+    const m = structuredClone(inst[0].f);
+    m.pages = [...new Set(inst.map((i) => i.path))];
+    if (inst.some((i) => i.f.items?.length)) {
+      const seen = new Map();
+      for (const { f } of inst) for (const it of f.items || []) { const k = it.url || it.element; if (!seen.has(k)) seen.set(k, it); }
+      m.items = [...seen.values()];
+    }
+    if (inst.some((i) => i.f.urls?.length)) m.urls = [...new Set(inst.flatMap((i) => i.f.urls || []))];
+    // the same header/footer element on every page is listed once, with the pages it's on
+    if (inst.some((i) => i.f.elements?.length)) {
+      const el = new Map(); let unlisted = 0;
+      for (const { f, path } of inst) {
+        for (const e of f.elements || []) {
+          const k = `${e.target}|${e.summary || ""}`;
+          if (!el.has(k)) el.set(k, { ...e, pages: [] });
+          if (!el.get(k).pages.includes(path)) el.get(k).pages.push(path);
+        }
+        unlisted += Math.max(0, (f.count || 0) - (f.elements || []).length);
+      }
+      m.elements = [...el.values()];
+      if (m.count != null) m.count = m.elements.length + unlisted;
+    }
+    const codes = [...new Map(inst.filter((i) => i.f.code).map((i) => [i.f.code, i])).values()];
+    if (codes.length > 1) {
+      if (m.category === "Mobile") m.code = [...new Set(codes.flatMap((c) => c.f.code.split("\n")))].join("\n");
+      else { m.variants = codes.map((c) => ({ pages: inst.filter((i) => i.f.code === c.f.code).map((i) => i.path), code: c.f.code })); m.code = null; }
+    }
+    const maxOf = (k) => Math.max(...inst.map((i) => i.f[k] || 0)) || null;
+    m.savingMs = maxOf("savingMs"); m.savingKiB = maxOf("savingKiB");
+    const n = m.elements?.length || 0;
+    if (m.key === "mobile:tap-targets") m.title = m.plain = `${n} button${n === 1 ? "" : "s"}/link${n === 1 ? "" : "s"} too small to tap reliably`;
+    if (m.key === "mobile:small-text") m.title = m.plain = `${n} piece${n === 1 ? "" : "s"} of text smaller than 12px`;
+    out.push(m);
+  }
+  return out;
+}
+
+function mergePageReports(results, { crawl, startedAt, failed = [], maxPages }) {
+  const home = results[0];
+  const n = results.length;
+  const perPage = results.map((r) => ({ path: pathOf(r.url), r }));
+  const checklist = results.some((r) => r.checklist) ? mergeChecklists(perPage.map(({ path, r }) => ({ path, checklist: r.checklist }))) : null;
+  const security = checklist ? finishFindings(securityFindingsFrom(checklist), home.url) : [];
+  const findings = rankFindings([...mergeFindings(perPage.map(({ path, r }) => ({ path, findings: r.findings }))), ...security]);
+  const counts = countsOf(findings);
+  const scoresOf = (cat) => results.map((r) => r.categoryScores[cat]).filter((v) => v != null);
+  const avg = (cat) => { const v = scoresOf(cat); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null; };
+  const min = (cat) => { const v = scoresOf(cat); return v.length ? Math.min(...v) : null; };
+  const categoryScores = {
+    Security: checklist ? securityScore(checklist) : min("Security"), Governance: min("Governance"), Privacy: min("Privacy"),
+    Speed: avg("Speed"), Accessibility: avg("Accessibility"), Mobile: avg("Mobile"), Schema: avg("Schema"),
+  };
+  const sk = new Map();
+  for (const { path, r } of perPage) for (const s of r.skipped) {
+    const k = `${s.check}|${s.reason}`;
+    if (!sk.has(k)) sk.set(k, { ...s, pages: [] });
+    sk.get(k).pages.push(path);
+  }
+  const skipped = [...sk.values()].map((s) => ({ check: s.check, reason: s.pages.length === n ? s.reason : `${s.reason} (on ${listPages(s.pages)})` }));
+  for (const f of failed) skipped.push({ check: `page ${f.page}`, reason: f.reason });
+  return {
+    ...home, startedAt, finishedAt: new Date().toISOString(),
+    categoryScores, checklist, findings, counts, verdict: verdictOf(counts), skipped,
+    pages: results.map(pageSummary),
+    crawl: { found: crawl.found, checked: n, capped: crawl.capped, viaSitemap: crawl.viaSitemap, maxPages },
+  };
+}
+
+/**
+ * The report. By default it checks every page it can find from `rawUrl` by following the site's own links
+ * (and sitemap.xml), up to `maxPages` (default 20); `maxPages: 1` checks only that page. The first page gets
+ * the full Lighthouse median (`lighthouseRuns`); the others one Lighthouse run each, to keep the run short.
+ */
+export async function runReport(rawUrl, { maxPages = 20, onProgress = null, ...pageOpts } = {}) {
+  if (!(maxPages > 1)) { const r = await runPageReport(rawUrl, pageOpts); return { ...r, pages: [pageSummary(r)], crawl: null }; }
+  const startedAt = new Date().toISOString();
+  const url = await assertSafeUrl(rawUrl, { allowPrivate: pageOpts.allowPrivate });
+  onProgress?.(`Finding pages on ${new URL(url).host}…`);
+  const crawl = await discoverPages(url, { allowPrivate: pageOpts.allowPrivate, maxPages });
+  const list = crawl.pages.length ? crawl.pages : [url];
+  onProgress?.(`Found ${list.length} page${list.length === 1 ? "" : "s"}${crawl.capped ? ` (stopped at ${maxPages}; raise --max-pages to check more)` : ""}: ${list.map(pathOf).join("  ")}`);
+  const probeCache = new Map();
+  const results = [], failed = [];
+  for (const [i, page] of list.entries()) {
+    onProgress?.(`Checking page ${i + 1} of ${list.length}: ${pathOf(page)}`);
+    try {
+      results.push(await runPageReport(page, { ...pageOpts, role: i === 0 ? "home" : "inner", probeCache, lighthouseRuns: i === 0 ? (pageOpts.lighthouseRuns ?? 3) : 1 }));
+    } catch (e) { failed.push({ page: pathOf(page), reason: e.message }); }
+  }
+  if (!results.length) throw new Error(`No page could be checked: ${failed.map((f) => `${f.page}: ${f.reason}`).join("; ")}`);
+  if (results.length === 1 && !failed.length) return { ...results[0], pages: [pageSummary(results[0])], crawl: { found: crawl.found, checked: 1, capped: crawl.capped, viaSitemap: crawl.viaSitemap, maxPages } };
+  return mergePageReports(results, { crawl, startedAt, failed, maxPages });
 }
 
 // ============================= Renderers =============================
@@ -600,27 +797,33 @@ const VERDICT_SUMMARY = {
 };
 
 export function toMarkdown(report) {
-  const { url, counts, verdict, findings, categoryScores = {}, checklist, skipped, brand } = report;
+  const { url, counts, verdict, findings, categoryScores = {}, checklist, skipped, brand, pages = [], crawl } = report;
+  const N = pages.length || 1;
+  const multi = N > 1;
   const fence = (code) => ["```", ...String(code).split("\n"), "```"];
   const findingMd = (f) => {
-    const out = [`#### [${SEV_LABEL[f.severity]}] ${f.plain}`, "", `- **Why it matters:** ${f.impact}`];
+    const out = [`#### [${SEV_LABEL[f.severity]}] ${f.plain}`, ""];
+    if (multi && f.pages?.length) out.push(`- **Found on ${f.pages.length === N ? `every page checked (${N})` : `${f.pages.length} of ${N} pages`}:** ${f.pages.map((p) => "`" + p + "`").join(", ")}`);
+    out.push(`- **Why it matters:** ${f.impact}`);
     if (f.fixPlain && f.fixPlain !== f.where) out.push(`- **What to do:** ${f.fixPlain}`);
     for (const it of (f.items || []).filter((i) => i.url || i.element).slice(0, 6)) {
       out.push(`- \`${it.url ? siteRelative(it.url) + (it.line ? ":" + it.line : "") : it.element}\`${it.totalBytes ? ` — ${Math.round(it.totalBytes / 1024)} KiB` : ""}${it.wastedBytes ? `, could save ${Math.round(it.wastedBytes / 1024)} KiB` : ""}`);
     }
     if (!(f.items || []).length && f.urls?.length) out.push(`- **File(s):** ${f.urls.map((u) => "`" + siteRelative(u) + "`").join(", ")}`);
     for (const e of (f.elements || [])) {
-      out.push(`- \`${e.target}\`${e.summary ? ` — ${e.summary}` : ""}`);
+      out.push(`- \`${e.target}\`${e.summary ? ` — ${e.summary}` : ""}${multi && e.pages?.length ? ` (${pagesPhrase(e.pages, N)})` : ""}`);
       if (e.fixed) out.push("", ...fence(e.fixed), "");
     }
     const solo = (f.elements || []).length === 1 && f.elements[0].fixed;
     if (f.where) out.push(`- **Where it goes:** ${f.where}`);
     if (f.code && !solo) out.push("", ...fence(f.code));
-    else if (!f.code && f.tool) out.push(`- **Tool / command:** ${f.tool}`);
+    else if (!f.code && f.tool && !f.variants) out.push(`- **Tool / command:** ${f.tool}`);
+    for (const v of f.variants || []) out.push("", `On ${listPages(v.pages)}:`, ...fence(v.code));
     return [...out, ""];
   };
 
   const lines = [`# Website Precheck — ${url}`, "", `**Website assessed:** ${siteName(url)} (${url}) · ${report.startedAt}`, ""];
+  if (multi) lines.push(`**${N} pages checked**${crawl?.capped ? ` (the first ${N} found — use --max-pages to check more)` : ""}: ${pages.map((p) => "`" + p.path + "`").join(" ")}`, "", `_Whole-site scores across ${N} pages:_`, "");
   if (brand?.name) lines.push(`_by ${brand.name}${brand.tagline ? " — " + brand.tagline : ""}_`, "");
   const order = SECTION_ORDER.filter((s) => s in categoryScores);
   lines.push(`| ${order.join(" | ")} |`, `|${order.map(() => "---").join("|")}|`, `| ${order.map((s) => categoryScores[s] == null ? "—" : categoryScores[s]).join(" | ")} |`, "");
@@ -632,16 +835,28 @@ export function toMarkdown(report) {
 
   lines.push(`## 2 · All issues (${findings.length})`, "");
   if (findings.length) {
-    lines.push("| Priority | Section | Issue |", "|---|---|---|");
-    for (const f of findings) lines.push(`| ${SEV_LABEL[f.severity]} | ${f.category} | ${f.plain.replace(/\|/g, "\\|")} |`);
+    lines.push(`| Priority | Section | Issue |${multi ? " Pages |" : ""}`, `|---|---|---|${multi ? "---|" : ""}`);
+    for (const f of findings) lines.push(`| ${SEV_LABEL[f.severity]} | ${f.category} | ${f.plain.replace(/\|/g, "\\|")} |${multi ? ` ${!f.pages?.length ? "—" : f.pages.length === N ? `all ${N}` : f.pages.join(", ")} |` : ""}`);
     lines.push("");
   }
 
-  lines.push("## 3 · Section by section", "");
+  if (multi) {
+    lines.push(`## 3 · Page by page (${N} pages)`, "", `| Page | ${order.join(" | ")} | Issues (high/med/low) |`, `|---|${order.map(() => "---").join("|")}|---|`);
+    for (const p of pages) lines.push(`| \`${p.path}\` | ${order.map((k) => p.categoryScores[k] ?? "—").join(" | ")} | ${p.counts.high}/${p.counts.medium}/${p.counts.low} |`);
+    lines.push("");
+    for (const p of pages) {
+      lines.push(`**\`${p.path}\`** — ${p.findings.length ? `${p.findings.length} issue${p.findings.length === 1 ? "" : "s"}` : "no issues"}`, "");
+      for (const f of p.findings) lines.push(`- [${SEV_LABEL[f.severity]}] ${f.category}: ${f.plain}`);
+      if (p.findings.length) lines.push("");
+    }
+  }
+
+  lines.push(`## ${multi ? 4 : 3} · Section by section`, "");
   for (const cat of order) {
     const s = categoryScores[cat];
     lines.push(`### ${SECTION_TITLE[cat]} — ${s == null ? "not checked" : `${s}/100 (${bandLabel(s)})`}`, "");
-    lines.push(`**Why it matters:** ${SECTION_WHY[cat]}`, "", `**How this score is calculated:** ${SECTION_METHOD[cat]}`, "");
+    lines.push(`**Why it matters:** ${SECTION_WHY[cat]}`, "", `**How this score is calculated:** ${SECTION_METHOD[cat]}${multi ? ` ${SITE_METHOD[cat]}` : ""}`, "");
+    if (multi) lines.push(`**Score by page:** ${pages.map((p) => `\`${p.path}\` ${p.categoryScores[cat] ?? "—"}`).join(" · ")}`, "");
     const items = (checklist?.items || []).filter((i) => i.section === cat);
     if (items.length) {
       lines.push("**What we checked:**", "");
@@ -681,9 +896,11 @@ function gauge(label, score) {
   </div>`;
 }
 
+const pagesPhrase = (pages, total) => (pages.length === total ? "on every page" : `on ${listPages(pages)}`);
+
 // Each finding leads with the plain-English translation; the raw tool title/meta becomes a
 // collapsed technical aside — present for anyone who wants it, never the thing you read first.
-function findingCard(f, { anchor = true } = {}) {
+function findingCard(f, { anchor = true, total = 1 } = {}) {
   const measured = [f.savingMs ? `~${f.savingMs}ms faster` : "", f.savingKiB ? `~${f.savingKiB} KiB smaller` : ""].filter(Boolean).join(" · ");
   const kib = (b) => (b == null ? "—" : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KiB`);
   const ttl = (ms) => (ms == null ? null : ms === 0 ? "not cached" : ms < 3600000 ? `${Math.round(ms / 60000)} min` : ms < 86400000 ? `${Math.round(ms / 3600000)} h` : `${Math.round(ms / 86400000)} days`);
@@ -695,7 +912,7 @@ function findingCard(f, { anchor = true } = {}) {
     : (f.urls && f.urls.length ? `<p class="files"><strong>File${f.urls.length > 1 ? "s" : ""}:</strong> ${f.urls.map((u) => `<code>${esc(siteRelative(u))}</code>`).join(" ")}</p>` : "");
   // Accessibility / Mobile: each failing element, why it fails, and its exact fix
   const elements = (f.elements || []).length ? `<div class="elements"><p class="el-head"><strong>Exactly where:</strong>${f.count > f.elements.length ? ` <span class="muted">(first ${f.elements.length} of ${f.count})</span>` : ""}</p>
-      ${f.elements.map((e) => `<div class="el"><div><code>${esc(e.target)}</code></div>${e.html ? `<div class="el-html"><code>${esc(e.html)}</code></div>` : ""}${e.summary ? `<div class="el-why">${esc(e.summary)}</div>` : ""}${e.fixed ? `<div class="code-block small"><div class="code-label">Change it to</div><pre><code>${esc(e.fixed)}</code></pre></div>` : ""}</div>`).join("")}
+      ${f.elements.map((e) => `<div class="el"><div><code>${esc(e.target)}</code>${total > 1 && e.pages?.length ? ` <span class="el-pages">${esc(pagesPhrase(e.pages, total))}</span>` : ""}</div>${e.html ? `<div class="el-html"><code>${esc(e.html)}</code></div>` : ""}${e.summary ? `<div class="el-why">${esc(e.summary)}</div>` : ""}${e.fixed ? `<div class="code-block small"><div class="code-label">Change it to</div><pre><code>${esc(e.fixed)}</code></pre></div>` : ""}</div>`).join("")}
     </div>` : "";
   // one element already shows its own fix — don't repeat the identical code underneath
   const soloElementFix = (f.elements || []).length === 1 && f.elements[0].fixed;
@@ -703,18 +920,23 @@ function findingCard(f, { anchor = true } = {}) {
     ? `${f.where ? `<p class="where"><strong>Where it goes:</strong> ${esc(f.where)}</p>` : ""}<div class="code-block"><div class="code-label">Paste this</div><pre><code>${esc(f.code)}</code></pre></div>`
     : f.where ? `<p class="where"><strong>How to fix:</strong> ${esc(f.where)}</p>` : (f.tool ? `<p class="tool"><strong>Tool / command:</strong> ${esc(f.tool)}</p>` : "");
   const doLine = f.fixPlain && f.fixPlain !== f.where ? `<p class="do"><strong>What to do:</strong> ${esc(f.fixPlain)}</p>` : "";
+  // pages that need different code (e.g. each page's own schema block) get one block each
+  const variants = f.variants?.length ? f.variants.map((v) => `<div class="code-block"><div class="code-label">Paste this on ${esc(listPages(v.pages))}</div><pre><code>${esc(v.code)}</code></pre></div>`).join("") : "";
+  const onPages = total > 1 && f.pages?.length ? `<p class="on-pages"><strong>Found on ${f.pages.length === total ? `every page checked (${total})` : `${f.pages.length} of ${total} pages`}:</strong> ${f.pages.slice(0, 12).map((p) => `<code>${esc(p)}</code>`).join(" ")}${f.pages.length > 12 ? ` and ${f.pages.length - 12} more` : ""}</p>` : "";
   return `<article class="finding sev-${f.severity}"${anchor && f._id ? ` id="${f._id}"` : ""}>
     <div class="finding-head">
       <span class="badge sev-${f.severity}">${SEV_LABEL[f.severity]}</span>
       <span class="cat-pill">${esc(f.category)}</span>
       <h4>${esc(f.plain)}</h4>
     </div>
+    ${onPages}
     ${measured ? `<p class="measured">${esc(measured)} if fixed</p>` : ""}
     <p class="why"><strong>Why it matters:</strong> ${esc(f.impact)}</p>
     ${doLine}
     ${itemTable}
     ${elements}
     ${codeBlock}
+    ${variants}
     ${f.notes?.length ? `<ul class="notes">${f.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
     <details class="tech">
       <summary>Technical details</summary>
@@ -745,6 +967,17 @@ const SECTION_METHOD = {
   Mobile: "Four checks on a 390×844 phone screen, 25 points each: a mobile viewport tag, no sideways scrolling, buttons and links at least 24×24px, and text at least 12px.",
   Schema: "How complete your structured data is: the share of each type's recommended properties that are filled in, averaged over the blocks found. No structured data at all scores 0.",
 };
+// Added to "How this score is calculated" when the report covers several pages
+const SITE_METHOD = {
+  Security: "Across the whole site: every page is checked, and a check that fails on any page fails for the site.",
+  Governance: "Across the whole site: the lowest page's score counts — one badly set cookie is a site problem.",
+  Privacy: "Across the whole site: the lowest page's score counts — one undisclosed tracker is a site problem.",
+  Speed: "Across the whole site: the average of every page's score (the starting page uses the median of several runs, the others one run each).",
+  Accessibility: "Across the whole site: the average of every page's score.",
+  Mobile: "Across the whole site: the average of every page's score.",
+  Schema: "Across the whole site: the average of every page's score (a page with no structured data scores 0).",
+};
+const fmtSec = (ms) => (ms == null ? "—" : `${(ms / 1000).toFixed(1)} s`);
 const bandLabel = (s) => (s == null ? "Not checked" : s >= 90 ? "Good" : s >= 50 ? "Needs improvement" : "Poor");
 
 // Core Web Vitals thresholds, as Google publishes them (good ≤ first number, poor > second)
@@ -758,9 +991,13 @@ const CWV = [
 ];
 
 export function toHTML(report) {
-  const { url, startedAt, categoryScores, counts, verdict, findings, headers, a11y, cookies, privacy, schema, lighthouse, mobile, checklist, platform, page, skipped, brand } = report;
+  const { url, startedAt, categoryScores, counts, verdict, findings, headers, a11y, cookies, privacy, schema, lighthouse, mobile, checklist, platform, page, skipped, brand, pages = [], crawl } = report;
+  const N = pages.length || 1;
+  const multi = N > 1;
   const date = new Date(startedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
   findings.forEach((f, i) => { f._id = `f${i + 1}`; });
+  const idByKey = new Map(findings.map((f) => [f.key || `${f.category}|${f.plain}`, f._id]));
+  const pageSlug = (p) => "page-" + (p.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "home");
   const skipNote = (check) => { const s = skipped.find((x) => x.check === check); return `<p class="muted">Not checked${s ? ": " + esc(s.reason) : ""}.</p>`; };
   const sections = SECTION_ORDER.filter((s) => s in categoryScores);
   const slug = (s) => "sec-" + s.toLowerCase();
@@ -771,13 +1008,30 @@ export function toHTML(report) {
 
   // ---------- WHAT TO DO FIRST
   const first = findings.slice(0, 5);
-  const firstHTML = first.map((f) => findingCard(f, { anchor: false })).join("") || `<p class="all-clear">Nothing to fix right now.</p>`;
+  const firstHTML = first.map((f) => findingCard(f, { anchor: false, total: N })).join("") || `<p class="all-clear">Nothing to fix right now.</p>`;
 
   // ---------- ALL ISSUES
-  const allRows = findings.map((f) => `<tr><td><span class="badge sev-${f.severity}">${SEV_LABEL[f.severity]}</span></td><td>${esc(f.category)}</td><td><a href="#${f._id}">${esc(f.plain)}</a></td></tr>`).join("");
+  const pagesCell = (f) => !f.pages?.length ? "—" : f.pages.length === N ? `All ${N}` : f.pages.length <= 3 ? f.pages.map((p) => `<code>${esc(p)}</code>`).join(" ") : `${f.pages.length} pages`;
+  const allRows = findings.map((f) => `<tr><td><span class="badge sev-${f.severity}">${SEV_LABEL[f.severity]}</span></td><td>${esc(f.category)}</td><td><a href="#${f._id}">${esc(f.plain)}</a></td>${multi ? `<td class="pages-cell">${pagesCell(f)}</td>` : ""}</tr>`).join("");
   const allHTML = findings.length
-    ? `<table class="all-issues"><thead><tr><th>Priority</th><th>Section</th><th>Issue (click for the fix)</th></tr></thead><tbody>${allRows}</tbody></table>`
+    ? `<table class="all-issues"><thead><tr><th>Priority</th><th>Section</th><th>Issue (click for the fix)</th>${multi ? "<th>Pages</th>" : ""}</tr></thead><tbody>${allRows}</tbody></table>`
     : `<p class="all-clear">No issues found in any section.</p>`;
+
+  // ---------- PAGE BY PAGE (whole-site runs)
+  const cell = (s) => s == null ? `<td class="sc none">—</td>` : `<td class="sc ${scoreBand(s)}">${s}</td>`;
+  const pageRows = pages.map((p) => `<tr><td><a href="#${pageSlug(p.path)}"><code>${esc(p.path)}</code></a></td>${sections.map((k) => cell(p.categoryScores[k])).join("")}<td class="issues-cell">${p.counts.high ? `<span class="pill high">${p.counts.high}</span>` : ""}${p.counts.medium ? `<span class="pill medium">${p.counts.medium}</span>` : ""}${p.counts.low ? `<span class="pill low">${p.counts.low}</span>` : ""}${!p.findings.length ? `<span class="ok">✓ none</span>` : ""}</td></tr>`).join("");
+  const pageDetails = pages.map((p) => `<details class="page-detail" id="${pageSlug(p.path)}"${p.findings.some((f) => f.severity === "high") ? " open" : ""}>
+      <summary><code>${esc(p.path)}</code> <span class="muted">— ${p.findings.length ? `${p.findings.length} issue${p.findings.length === 1 ? "" : "s"}` : "no issues"}</span></summary>
+      <p class="muted"><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.url)}</a>${p.metrics ? ` · LCP ${fmtSec(p.metrics.lcpMs)} · CLS ${p.metrics.cls == null ? "—" : Number(p.metrics.cls).toFixed(3)} · TBT ${p.metrics.tbtMs == null ? "—" : Math.round(p.metrics.tbtMs) + " ms"}${p.lighthouseRuns ? ` (${p.lighthouseRuns === 1 ? "1 Lighthouse run" : `median of ${p.lighthouseRuns} runs`})` : ""}` : ""}</p>
+      ${p.findings.length ? `<ul class="page-issues">${p.findings.map((f) => `<li><span class="badge sev-${f.severity}">${SEV_LABEL[f.severity]}</span> <span class="cat-pill">${esc(f.category)}</span> ${idByKey.has(f.key) ? `<a href="#${idByKey.get(f.key)}">${esc(f.plain)}</a>` : esc(f.plain)}</li>`).join("")}</ul>` : `<p class="all-clear">Nothing to fix on this page.</p>`}
+    </details>`).join("");
+  const pageByPage = multi ? `<div class="card">
+    <h2>3 · Page by page (${N} pages)</h2>
+    <p class="muted">Each page's own scores. Click a page for its issues; each issue links to its fix above.</p>
+    <div class="table-scroll"><table class="pages-table"><thead><tr><th>Page</th>${sections.map((k) => `<th>${esc(k === "Accessibility" ? "A11y" : k === "Governance" ? "Gov." : k)}</th>`).join("")}<th>Issues</th></tr></thead><tbody>${pageRows}</tbody></table></div>
+    ${pageDetails}
+  </div>` : "";
+  const scoreByPage = (cat) => !multi ? "" : `<details class="by-page"><summary>Score by page</summary><table class="items"><thead><tr><th>Page</th><th>Score</th>${cat === "Speed" ? "<th>LCP</th><th>CLS</th><th>TBT</th>" : ""}</tr></thead><tbody>${pages.map((p) => `<tr><td><a href="#${pageSlug(p.path)}"><code>${esc(p.path)}</code></a></td>${cell(p.categoryScores[cat])}${cat === "Speed" ? `<td>${p.metrics ? fmtSec(p.metrics.lcpMs) : "—"}</td><td>${p.metrics?.cls != null ? Number(p.metrics.cls).toFixed(3) : "—"}</td><td>${p.metrics?.tbtMs != null ? Math.round(p.metrics.tbtMs) + " ms" : "—"}</td>` : ""}</tr>`).join("")}</tbody></table></details>`;
 
   // ---------- per-section "what we checked"
   const tick = (st) => (st === "pass" ? "✓" : st === "fail" ? "✗" : "!");
@@ -816,11 +1070,13 @@ export function toHTML(report) {
     return `<section class="card section" id="${slug(cat)}">
       <div class="sec-head"><h2>${esc(SECTION_TITLE[cat])}</h2><div class="sec-score ${s == null ? "none" : scoreBand(s)}"><span>${s == null ? "—" : s}</span><small>${s == null ? "" : "/100 · "}${bandLabel(s)}</small></div></div>
       <p class="sec-why"><strong>Why it matters:</strong> ${esc(SECTION_WHY[cat])}</p>
-      <p class="sec-method"><strong>How this score is calculated:</strong> ${esc(SECTION_METHOD[cat])}</p>
+      <p class="sec-method"><strong>How this score is calculated:</strong> ${esc(SECTION_METHOD[cat])}${multi ? ` ${esc(SITE_METHOD[cat])}` : ""}</p>
       <h3>What we checked</h3>
+      ${scoreByPage(cat)}
+      ${multi && cat !== "Security" ? `<p class="home-label">In detail, ${esc(pages[0].path)} (the page the check started from):</p>` : ""}
       ${checked[cat]()}
       <h3>What to do${items.length ? ` <span class="count">${items.length}</span>` : ""}</h3>
-      ${items.length ? items.map((f) => findingCard(f)).join("") : `<p class="all-clear">Nothing to fix in this section.</p>`}
+      ${items.length ? items.map((f) => findingCard(f, { total: N })).join("") : `<p class="all-clear">Nothing to fix in this section.</p>`}
     </section>`;
   }).join("");
 
@@ -938,6 +1194,21 @@ export function toHTML(report) {
   .brand-block img{width:36px; height:36px; border-radius:8px;}
   .brand-block .brand-text h1{font-size:19px; margin:0;}
   .brand-block .brand-text .brand-by{font-size:12px; color:var(--ink-faint);}
+  .assessed-pages{width:100%; font-size:13px; color:var(--ink-dim); margin-top:6px; line-height:1.9;}
+  .assessed-pages code, .on-pages code, .pages-cell code{white-space:nowrap;}
+  p.on-pages{background:var(--card); border:1px dashed var(--line); border-radius:6px; padding:6px 10px; font-size:13px;}
+  .el-pages{font-size:12px; color:var(--ink-faint); margin-left:6px;}
+  .table-scroll{overflow-x:auto;}
+  .pages-table th, .pages-table td{text-align:center; white-space:nowrap;}
+  .pages-table th:first-child, .pages-table td:first-child{text-align:left;}
+  td.sc{font-weight:800;} td.sc.good{color:var(--good);} td.sc.mid{color:var(--mid);} td.sc.bad{color:var(--bad);} td.sc.none{color:var(--ink-faint);}
+  .issues-cell .pill{padding:2px 8px; margin-right:3px; font-size:12px;} .issues-cell .ok{color:var(--good); font-weight:600; font-size:12.5px;}
+  details.page-detail{border-top:1px solid var(--line); padding:8px 0; scroll-margin-top:12px;}
+  details.page-detail summary{cursor:pointer; font-weight:600;}
+  details.page-detail:target{outline:2px solid var(--accent); border-radius:6px;}
+  ul.page-issues{list-style:none; margin:6px 0 4px; padding:0; display:flex; flex-direction:column; gap:6px; font-size:13.5px;}
+  details.by-page{margin:0 0 10px;} details.by-page summary{cursor:pointer; font-size:13px; font-weight:600; color:var(--accent);}
+  .home-label{font-size:12.5px; color:var(--ink-faint); margin:4px 0 6px; font-style:italic;}
   footer{text-align:center; color:var(--ink-faint); font-size:12px; margin-top:24px;}
   @media print{ body{background:#fff;} .card,article.finding{break-inside:avoid; border-color:#ccc;} }
 </style>
@@ -955,11 +1226,12 @@ export function toHTML(report) {
     <span class="assessed-lbl">Website assessed</span>
     <a class="assessed-site" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(siteName(url))}</a>
     <span class="assessed-url">${esc(url)}</span>
+    ${multi ? `<span class="assessed-pages"><strong>${N} pages checked</strong>${crawl?.capped ? ` (the first ${N} found — run with <code>--max-pages</code> to check more)` : ""}, found by following the site's own links${crawl?.viaSitemap ? " and its sitemap.xml" : ""}: ${pages.map((p) => `<a href="#${pageSlug(p.path)}"><code>${esc(p.path)}</code></a>`).join(" ")}</span>` : crawl ? `<span class="assessed-pages">1 page checked — no other pages were linked from it.</span>` : ""}
   </div>
 
   <div class="card">
     <div class="top-gauges">${topGauges}</div>
-    <p class="legend">Scores out of 100 · 90+ Good · 50–89 Needs improvement · under 50 Poor · click a score to jump to its section</p>
+    <p class="legend">${multi ? `Whole-site scores across ${N} pages · ` : ""}Scores out of 100 · 90+ Good · 50–89 Needs improvement · under 50 Poor · click a score to jump to its section</p>
   </div>
 
   <div class="card verdict ${verdict}">
@@ -977,11 +1249,13 @@ export function toHTML(report) {
     ${allHTML}
   </div>
 
-  <h2 class="part-title">3 · Section by section</h2>
+  ${pageByPage}
+
+  <h2 class="part-title">${multi ? 4 : 3} · Section by section</h2>
   ${sectionHTML}
 
   <div class="card intro">
-    <strong>About this report.</strong> It checks seven things on ${esc(url)} — Security, Governance (data &amp; cookies), Privacy (third parties), Speed, Accessibility, Mobile and Schema — from the outside, the way any visitor's browser sees the site.${platform?.id && platform.id !== "unknown" ? ` The site is served by ${esc(platform.name)}, so fixes are written for it.` : ""} Your own code can't be seen from outside: for anything that lives in your project, the Claude skill (site-hardening-and-speed) finds the exact file and makes the change.${brand?.tagline ? `<br><br><strong>Why ${esc(brand.name || "we")} built this:</strong> ${esc(brand.tagline)}` : ""}
+    <strong>About this report.</strong> It checks seven things on ${multi ? `${N} pages of ${esc(siteName(url))}` : esc(url)} — Security, Governance (data &amp; cookies), Privacy (third parties), Speed, Accessibility, Mobile and Schema — from the outside, the way any visitor's browser sees the site.${platform?.id && platform.id !== "unknown" ? ` The site is served by ${esc(platform.name)}, so fixes are written for it.` : ""} Your own code can't be seen from outside: for anything that lives in your project, the Claude skill (site-hardening-and-speed) finds the exact file and makes the change.${brand?.tagline ? `<br><br><strong>Why ${esc(brand.name || "we")} built this:</strong> ${esc(brand.tagline)}` : ""}
     <span class="disclaimer">This is engineering guidance, not a certification or legal advice. Automated checks are defense in depth, not a guarantee — they catch real, common issues but not everything. For anything with real legal or compliance exposure (GDPR, CCPA, ADA, a security incident), a qualified professional should review it.</span>
   </div>
 
@@ -1010,7 +1284,7 @@ const isMain = (() => { try { return import.meta.url === pathToFileURL(process.a
 if (isMain) {
   const args = process.argv.slice(2);
   const rawUrl = args.find((a) => /^[a-z][a-z0-9+.-]+:\/\//i.test(a));
-  if (!rawUrl) { console.error("Usage: node report.mjs <url> [--out dir] [--skip-lighthouse] [--skip-a11y] [--skip-cookies] [--skip-video] [--skip-privacy] [--skip-schema] [--allow-private] [--brand-name N] [--brand-logo path] [--brand-tagline T] [--brand-url U] [--brand-copyright C]"); process.exit(2); }
+  if (!rawUrl) { console.error("Usage: node report.mjs <url> [--out dir] [--max-pages N (default 20)] [--single] [--skip-lighthouse] [--skip-a11y] [--skip-cookies] [--skip-video] [--skip-privacy] [--skip-schema] [--allow-private] [--brand-name N] [--brand-logo path] [--brand-tagline T] [--brand-url U] [--brand-copyright C]"); process.exit(2); }
   if (!/^https?:\/\//i.test(rawUrl)) { console.error(`Refused: only http:// and https:// URLs can be checked (got "${rawUrl.split(':')[0]}:").`); process.exit(2); }
   const opt = (name, def) => { const i = args.indexOf("--" + name); return i >= 0 && args[i + 1] ? args[i + 1] : def; };
   const outDir = opt("out", "precheck-report");
@@ -1044,6 +1318,8 @@ if (isMain) {
       lighthouseRuns: Number(opt("runs", "3")) || 3,
       lighthouseForm: opt("form", "mobile"),
       brand,
+      maxPages: flag(args, "single") ? 1 : Math.max(1, Math.min(100, Number(opt("max-pages", "20")) || 20)),
+      onProgress: (msg) => process.stderr.write(`\n▸ ${msg}\n`),
     });
   } catch (e) {
     console.error(/private|local|valid URL/i.test(e.message) ? "Refused: " + e.message : e.message);

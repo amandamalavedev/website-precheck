@@ -89,9 +89,12 @@ pitfalls that are easy to miss.
 
 ## Scripts
 
-- `scripts/report.mjs <url>` — **start here for a launch/handoff check.** Runs all six checks below
-  against one URL — Security, Governance (cookies), Privacy (third-party trackers + disclosure),
-  Speed (Lighthouse + video weight), Accessibility, SEO (structured data) — and writes a shareable
+- `scripts/report.mjs <url>` — **start here for a launch/handoff check.** Runs all seven checks below
+  on **every page of the site** — it follows the site's own links and sitemap.xml (up to `--max-pages`,
+  default 20; `--single` for just the one URL) — Security (incl. leaked keys/emails in every script and the
+  data files they load, exposed server files/backups), Governance (cookies), Privacy (third-party trackers
+  + disclosure), Speed (Lighthouse + video weight), Accessibility, Mobile, Schema (structured data). Each
+  problem is listed once with the pages it's on, plus whole-site scores and a page-by-page table. It writes a shareable
   report in three forms: `precheck-report.json` (the raw data), `precheck-report.html` (a self-contained
   page — a gauge per pillar, a plain-English description of what's checked, a "fix this first" list
   tagged by category and severity, every finding with why-it-matters + **the actual code for this

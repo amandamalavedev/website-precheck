@@ -274,21 +274,66 @@ export function schemaFor(p) {
   return { code: `<script type="application/ld+json">\n${json}\n</script>`, missing };
 }
 
+/** A WebPage block for an inner page (the Organization belongs on the home page only), filled in from the
+ *  page's own title and description and tied to the site, e.g. "About | Brand" → name "About". */
+export function pageSchemaFor(p) {
+  // Inner pages are titled "Page · Brand" (the brand LAST — "About · Acme", "Guide · Use case | Acme"),
+  // so the brand is og:site_name if set, else the last part; everything before it is the page's name.
+  const parts = (p.meta.title || "").split(/\s[|·•–—-]\s/).map((s) => s.trim()).filter(Boolean);
+  const brand = p.meta.siteName && parts.includes(p.meta.siteName) ? p.meta.siteName : parts.length > 1 ? parts[parts.length - 1] : null;
+  const name = (brand ? parts.filter((s) => s !== brand).join(" · ") : parts[0]) || new URL(p.url).pathname;
+  const page = { "@context": "https://schema.org", "@type": "WebPage", name, url: p.url };
+  if (p.meta.description) page.description = p.meta.description;
+  page.isPartOf = { "@type": "WebSite", ...(brand || p.meta.siteName ? { name: p.meta.siteName || brand } : {}), url: p.origin + "/" };
+  const missing = [!p.meta.description && "a description (the page has no meta description)"].filter(Boolean);
+  return { code: `<script type="application/ld+json">\n${JSON.stringify(page, null, 2)}\n</script>`, missing };
+}
+
 // ---------------------------------------------------------------- the security checklist
 // Every item is pass / fail / warn with a plain explanation; every fail or warn carries the exact fix
 // for this site — where it goes on this host and what to paste (Amanda, 2026-10-02: "if it's an X then
 // we've got to tell them how to fix it"). Probes are read-only GETs of the site's own public URLs.
 const PLATFORM_MANAGED = new Set(["netlify", "vercel", "cloudflare-pages", "github-pages", "railway", "render", "fly", "aws", "google", "cloudflare"]);
 
-async function probe(url, { allowPrivate }) {
-  try {
-    const { res, finalUrl } = await safeFetch(url, { allowPrivate, init: { headers: { "User-Agent": "website-precheck/1.0 (+checklist)" } } });
-    const text = res.status === 200 ? (await readTextCapped(res, 20_000)) : "";
-    return { status: res.status, finalUrl, text, type: res.headers.get("content-type") || "" };
-  } catch { return null; }
+// Scripts and data files are read whole (up to 3 MB): a key sitting past the first 20 KB of a bundle was
+// invisible to the first version of this check. `cache` (a Map) lets a multi-page report probe each
+// address once for the whole site instead of once per page.
+async function probe(url, { allowPrivate, maxBytes = 20_000, cache = null }) {
+  const key = url + "|" + maxBytes;
+  if (cache?.has(key)) return cache.get(key);
+  const run = (async () => {
+    try {
+      const { res, finalUrl } = await safeFetch(url, { allowPrivate, init: { headers: { "User-Agent": "website-precheck/1.0 (+checklist)" } } });
+      const text = res.status === 200 ? (await readTextCapped(res, maxBytes)) : "";
+      if (res.status !== 200) { try { await res.body?.cancel(); } catch {} }
+      return { status: res.status, finalUrl, text, type: res.headers.get("content-type") || "" };
+    } catch { return null; }
+  })();
+  cache?.set(key, run);
+  return run;
+}
+const WHOLE_FILE = 3_000_000;
+
+// Data files a site's own scripts load (fetch("/data/users.json"), "mcp-evidence/results.json"…) — every
+// visitor can download them too, so they get the same leak scan as the scripts.
+const DATA_FILE = /["'`]((?:\.{0,2}\/)?[\w@.~-]+(?:\/[\w@.~-]+)*\.(?:json|jsonl|ndjson|csv|tsv|txt|xml|ya?ml|env|ini|conf|cfg|sql|log))["'`]/gi;
+// A relative path in a script is resolved by fetch() against the PAGE, not the script file (found
+// 2026-10-02: /assets/app.js loading "data/x.json" fetches /data/x.json) — so try the page first, then
+// the script's own folder (for import.meta.url-style loads); addresses that 404 are skipped later.
+export function dataFilesIn(scriptText, scriptUrl, origin, pageUrl = scriptUrl) {
+  const out = [];
+  for (const m of String(scriptText).matchAll(DATA_FILE)) {
+    for (const base of [pageUrl, scriptUrl]) {
+      let u; try { u = new URL(m[1], base); } catch { continue; }
+      if (u.origin !== origin || /package(-lock)?\.json$|manifest\.json$|tsconfig|\.min\./i.test(u.pathname)) continue;
+      if (!out.includes(u.href)) out.push(u.href);
+    }
+  }
+  return out;
 }
 
-export async function securityChecklist({ url, headers, cookies, privacy, profile, platform, allowPrivate = false }) {
+export async function securityChecklist({ url, headers, cookies, privacy, profile, platform, allowPrivate = false, probeCache = null }) {
+  const probe_ = (u, o = {}) => probe(u, { allowPrivate, cache: probeCache, ...o });
   const items = [];
   const H = headers?.responseHeaders || {};
   const has = (k) => H[k] != null && String(H[k]).trim() !== "";
@@ -305,7 +350,7 @@ export async function securityChecklist({ url, headers, cookies, privacy, profil
     isHttps ? null : { where: PLATFORM_MANAGED.has(platform.id) ? `${platform.name} provides free HTTPS: turn on "HTTPS" / "Force HTTPS" for your domain in its dashboard.` : "Get a free certificate from Let's Encrypt (e.g. sudo certbot --nginx) and serve the site on https://.", code: null });
   if (isHttps && headers) {
     const httpUrl = url.replace(/^https:/i, "http:");
-    const p = await probe(httpUrl, { allowPrivate });
+    const p = await probe_(httpUrl);
     const redirects = !!(p && /^https:/i.test(p.finalUrl || ""));
     let fix = null;
     if (p && !redirects) {
@@ -369,10 +414,12 @@ export async function securityChecklist({ url, headers, cookies, privacy, profil
   // 13. Files that must never be public
   if (origin) {
     const exposed = [];
-    const git = await probe(origin + "/.git/HEAD", { allowPrivate });
+    const git = await probe_(origin + "/.git/HEAD");
     if (git && git.status === 200 && /^ref:\s|^[0-9a-f]{40}\s*$/m.test(git.text)) exposed.push("/.git/ (your whole source code and its history)");
-    const env = await probe(origin + "/.env", { allowPrivate });
-    if (env && env.status === 200 && !/html/i.test(env.type) && /^[A-Z][A-Z0-9_]*\s*=/m.test(env.text)) exposed.push("/.env (passwords and API keys)");
+    for (const p of ["/.env", "/.env.local", "/.env.production", "/.env.development", "/.env.bak"]) {
+      const env = await probe_(origin + p);
+      if (env && env.status === 200 && !/html/i.test(env.type) && /^[A-Z][A-Z0-9_]*\s*=/m.test(env.text)) exposed.push(`${p} (passwords and API keys)`);
+    }
     let fix = null;
     if (exposed.length) fix = platform.id === "nginx"
       ? { where: "Block them in your nginx server block, delete them from the deployed folder, and rotate every secret they contained:", code: "location ~ /\\.(git|env) { deny all; return 404; }" }
@@ -388,19 +435,33 @@ export async function securityChecklist({ url, headers, cookies, privacy, profil
   if (profile && origin) {
     const scanned = [];   // { url, text }
     const maps = [];      // exposed source maps
+    const dataFiles = [];
     for (const s of profile.firstPartyScripts.slice(0, 10)) {
-      const r = await probe(s, { allowPrivate });
+      const r = await probe_(s, { maxBytes: WHOLE_FILE });
       if (!r || r.status !== 200) continue;
       scanned.push({ url: s, text: r.text });
+      for (const d of dataFilesIn(r.text, s, origin, profile.url)) if (!dataFiles.includes(d)) dataFiles.push(d);
       const mapRef = /\/\/[#@]\s*sourceMappingURL=([^\s'"]+)\s*$/m.exec(r.text)?.[1];
       const mapUrl = mapRef && !/^data:/i.test(mapRef) ? new URL(mapRef, s).href : s + ".map";
-      const m = await probe(mapUrl, { allowPrivate });
+      const m = await probe_(mapUrl);
       if (m && m.status === 200 && /"sources"\s*:/.test(m.text)) maps.push(mapUrl);
     }
-    if (profile.inlineScriptText) scanned.push({ url: profile.url + " (inline scripts)", text: profile.inlineScriptText });
+    const scriptCount = scanned.length;
+    if (profile.inlineScriptText) {
+      scanned.push({ url: profile.url + " (inline scripts)", text: profile.inlineScriptText });
+      for (const d of dataFilesIn(profile.inlineScriptText, profile.url, origin)) if (!dataFiles.includes(d)) dataFiles.push(d);
+    }
+    let dataCount = 0;
+    for (const d of dataFiles.slice(0, 20)) {
+      const r = await probe_(d, { maxBytes: WHOLE_FILE });
+      if (!r || r.status !== 200 || /text\/html/i.test(r.type)) continue;
+      scanned.push({ url: d, text: r.text, data: true });
+      dataCount++;
+    }
+    const scannedWhat = `${scriptCount} script file(s)${profile.inlineScriptText ? ", the page's inline scripts" : ""}${dataCount ? ` and ${dataCount} data file(s) the scripts load` : ""}`;
 
     item("source-maps", "Your original source code isn't downloadable (source maps)", maps.length ? "fail" : "pass",
-      maps.length ? `These source maps are public — they hand anyone your original, readable source code, comments and all: ${maps.join(", ")}` : `Checked ${scanned.length} script file(s): no public source maps.`,
+      maps.length ? `These source maps are public — they hand anyone your original, readable source code, comments and all: ${maps.join(", ")}` : `Checked ${scriptCount} script file(s): no public source maps.`,
       maps.length ? { where: "Stop publishing source maps in production: turn them off in your build tool (or delete the .map files from the deployed folder) and redeploy.", code: "// Vite (vite.config.js):\nexport default { build: { sourcemap: false } }\n\n// webpack (webpack.config.js):\nmodule.exports = { devtool: false }\n\n// esbuild: remove --sourcemap from the build command\n// Next.js (next.config.js):\nmodule.exports = { productionBrowserSourceMaps: false }" } : null);
 
     // API keys, tokens and passwords in code every visitor downloads. Masked in the report — never printed in full.
@@ -429,44 +490,73 @@ export async function securityChecklist({ url, headers, cookies, privacy, profil
     }
     const worst = hits.some((h) => h.sev === "fail") ? "fail" : hits.length ? "warn" : "pass";
     item("secrets-in-code", "No API keys, tokens or passwords in code visitors download", worst,
-      hits.length ? `Found in files every visitor downloads: ${hits.map((h) => `${h.label} (${h.value}) in ${h.where}`).join("; ")}.${hits.some((h) => h.label === "Google API key") ? " Google API keys for Maps/Firebase are designed to be public, but only if they're restricted to your domain." : ""}` : `Scanned ${scanned.length} script source(s) for API keys, tokens, private keys and hard-coded passwords: none found.`,
+      hits.length ? `Found in files every visitor downloads: ${hits.map((h) => `${h.label} (${h.value}) in ${h.where}`).join("; ")}.${hits.some((h) => h.label === "Google API key") ? " Google API keys for Maps/Firebase are designed to be public, but only if they're restricted to your domain." : ""}` : `Scanned ${scannedWhat} for API keys, tokens, private keys and hard-coded passwords: none found.`,
       hits.length ? { where: "1) Revoke/rotate every key listed — assume it's already been copied. 2) Move the secret to your server (an environment variable) and have the browser call your own server, which adds the key. 3) Rebuild and redeploy. For Google browser keys: Google Cloud Console → APIs & Services → Credentials → the key → \"Website restrictions\" → add your domain.", code: "// Server side (Node/Express) — the key never reaches the browser:\napp.post(\"/api/ask\", async (req, res) => {\n  const r = await fetch(\"https://api.provider.com/v1/…\", {\n    headers: { Authorization: `Bearer ${process.env.PROVIDER_API_KEY}` },\n    method: \"POST\", body: JSON.stringify(req.body),\n  });\n  res.status(r.status).send(await r.text());\n});" } : null);
 
     // Email addresses / usernames baked into scripts (not the page's public contact links)
     const pageEmail = (profile.meta.email || "").toLowerCase();
-    const emails = [...new Set(scanned.flatMap(({ text }) => [...text.matchAll(/\b[A-Za-z0-9._%+-]{2,}@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}\b/g)].map((m) => m[0].toLowerCase())))]
-      .filter((e) => e !== pageEmail && !/example\.|sentry|w3\.org|schema\.org|\.(png|jpg|webp|svg|gif)$|@\d|noreply|no-reply|^[0-9a-f]{20,}@/i.test(e)).slice(0, 8);
-    item("emails-in-code", "No staff emails or usernames inside the site's scripts", emails.length ? "warn" : "pass",
-      emails.length ? `These addresses are embedded in JavaScript any visitor can read (useful to phishers and password-guessers): ${emails.map((e) => e.replace(/^(.{2}).*(@.*)$/, "$1…$2")).join(", ")}` : "No email addresses found inside the site's script files.",
-      emails.length ? { where: "Remove them from the front-end code (seed data, config, comments, test accounts). Anything that needs them should load from your server after sign-in.", code: null } : null);
+    // (2+ character names only: one-letter addresses like a@b.co are test data, not people)
+    const emailAt = new Map();
+    for (const { url: where, text } of scanned) for (const m of text.matchAll(/\b[A-Za-z0-9._%+-]{2,}@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}\b/g)) {
+      const e = m[0].toLowerCase();
+      if (e === pageEmail || /example\.|sentry|w3\.org|schema\.org|\.(png|jpg|webp|svg|gif)$|@\d|noreply|no-reply|^[0-9a-f]{20,}@/i.test(e)) continue;
+      if (!emailAt.has(e)) emailAt.set(e, where);
+    }
+    const emails = [...emailAt].slice(0, 8);
+    item("emails-in-code", "No staff emails or usernames inside the site's scripts or data files", emails.length ? "warn" : "pass",
+      emails.length ? `These addresses are inside files any visitor can download (useful to phishers and password-guessers): ${emails.map(([e, w]) => `${e.replace(/^(.{2}).*(@.*)$/, "$1…$2")} in ${w}`).join("; ")}` : `No email addresses found inside ${scannedWhat}.`,
+      emails.length ? { where: "Remove them from the front-end code and public data files (seed data, config, comments, test accounts). Anything that needs them should load from your server after sign-in.", code: null } : null);
+    // which files each scan covered — a whole-site report totals these across pages
+    const scannedFiles = scanned.map((x) => x.url);
+    for (const i of items) if (["source-maps", "secrets-in-code", "emails-in-code"].includes(i.id)) i.scanned = i.id === "source-maps" ? scannedFiles.slice(0, scriptCount) : scannedFiles;
 
     // Server-side files that must never sit in the public folder
     const leaked = [];
-    for (const [path, test, what] of [
+    const SERVER_PROBES = [
       ["/server.js", (r) => /require\(|process\.env|express\(|createServer/.test(r.text), "your server code"],
       ["/server.cjs", (r) => /require\(|process\.env|express\(|createServer/.test(r.text), "your server code"],
       ["/server.mjs", (r) => /import .* from|process\.env|createServer/.test(r.text), "your server code"],
       ["/.npmrc", (r) => /_authToken|registry/.test(r.text), "npm credentials"],
       ["/.DS_Store", (r) => r.text.includes("Bud1") || r.status === 200 && !/html/i.test(r.type), "a list of your file names"],
-    ]) {
-      const r = await probe(origin + path, { allowPrivate });
+      ["/package.json", (r) => /"(?:dependencies|scripts|devDependencies)"\s*:/.test(r.text), "your software list and versions"],
+      ["/.htpasswd", (r) => /^[\w.-]+:\S{8,}/m.test(r.text), "password hashes", true],
+      ["/wp-config.php.bak", (r) => /DB_PASSWORD/.test(r.text), "database password", true],
+      ["/config.json", (r) => /"[^"]*(?:password|secret|token|api[_-]?key|private)[^"]*"\s*:/i.test(r.text), "a config file with secret-looking fields"],
+      ["/secrets.json", (r) => r.text.trim().startsWith("{"), "a secrets file", true],
+      ["/credentials.json", (r) => r.text.trim().startsWith("{"), "a credentials file", true],
+      ["/docker-compose.yml", (r) => /^\s*services\s*:/m.test(r.text), "your server setup"],
+      ["/Dockerfile", (r) => /^\s*FROM\s+\S+/im.test(r.text), "your server setup"],
+      ["/CLAUDE.md", (r) => r.text.length > 40, "instructions for your AI assistant (often names internal paths, tools and accounts)"],
+      ["/.claude/settings.json", (r) => r.text.trim().startsWith("{"), "your AI assistant's settings"],
+      ["/.cursorrules", (r) => r.text.length > 40, "instructions for your AI editor"],
+      ["/.vscode/settings.json", (r) => r.text.trim().startsWith("{"), "your editor settings"],
+      ["/backup.zip", (r) => r.text.startsWith("PK"), "a backup of your site", true],
+      ["/site.zip", (r) => r.text.startsWith("PK"), "a copy of your site", true],
+      ["/backup.sql", (r) => /CREATE TABLE|INSERT INTO/i.test(r.text), "a copy of your database", true],
+      ["/dump.sql", (r) => /CREATE TABLE|INSERT INTO/i.test(r.text), "a copy of your database", true],
+    ];
+    const SERVER_PROBE_COUNT = SERVER_PROBES.length;
+    for (const [path, test, what, always] of SERVER_PROBES) {
+      const r = await probe_(origin + path);
       if (r && r.status === 200 && !/text\/html/i.test(r.type) && test(r)) {
-        const secret = SECRET.some(([, re, sev]) => sev === "fail" && new RegExp(re.source, re.flags.replace("g", "")).test(r.text))
+        const secret = !!always || SECRET.some(([, re, sev]) => sev === "fail" && new RegExp(re.source, re.flags.replace("g", "")).test(r.text))
           || /\b(?:password|passcode|secret|api[_-]?key)\s*[:=]\s*["'`][^"'`\s]{6,}/i.test(r.text) || path === "/.npmrc";
-        leaked.push({ label: `${path} (${what})`, secret });
+        leaked.push({ path, label: `${path} (${what})`, secret, always: !!always });
       }
     }
     const anySecret = leaked.some((l) => l.secret);
-    item("server-files", "Server code and config files aren't public (server.js, .npmrc…)", anySecret ? "fail" : leaked.length ? "warn" : "pass",
-      !leaked.length ? "No server code or config files are publicly readable at the usual addresses."
-        : anySecret ? `Anyone can download: ${leaked.map((l) => l.label + (l.secret ? " — contains what looks like a password or key" : "")).join("; ")}. Rotate every secret in it now.`
+    item("server-files", "Server code, config files and backups aren't public (server.js, .env backups, .zip/.sql, AI config…)", anySecret ? "fail" : leaked.length ? "warn" : "pass",
+      !leaked.length ? `None of the ${SERVER_PROBE_COUNT} usual addresses for server code, config files, backups, database dumps and AI-assistant notes are publicly readable.`
+        : anySecret ? `Anyone can download: ${leaked.map((l) => l.label + (l.always ? " — treat everything in it as exposed" : l.secret ? " — contains what looks like a password or key" : "")).join("; ")}. Rotate every secret in it now.`
         : `Anyone can download: ${leaked.map((l) => l.label).join("; ")}. No passwords or keys were found in it, so this is low risk today — but it shows how the site works, and the next edit could add a secret. It doesn't belong in the public folder.`,
-      leaked.length ? { where: PLATFORM_MANAGED.has(platform.id) ? `Remove these from the folder you deploy to ${platform.name} — only the built front-end belongs there — then redeploy and rotate any secrets they contained.` : "Remove them from the web root (only public files belong there), or block them in your server config, then rotate any secrets they contained.", code: platform.id === "nginx" ? "location ~ ^/(server\\.(js|cjs|mjs)|\\.npmrc|\\.DS_Store)$ { deny all; return 404; }" : null } : null);
+      leaked.length ? { where: PLATFORM_MANAGED.has(platform.id) ? `Remove these from the folder you deploy to ${platform.name} — only the built front-end belongs there — then redeploy and rotate any secrets they contained.` : "Remove them from the web root (only public files belong there), or block them in your server config, then rotate any secrets they contained.", code: platform.id === "netlify" || platform.id === "cloudflare-pages"
+        ? `# _redirects in your publish folder — a 404 for each file (the ! forces it even though the file exists):\n${leaked.map((l) => `${l.path}  /404  404!`).join("\n")}`
+        : platform.id === "nginx" ? leaked.map((l) => `location = ${l.path} { deny all; return 404; }`).join("\n") : null } : null);
   }
 
   // 14. security.txt
   if (origin) {
-    const st = await probe(origin + "/.well-known/security.txt", { allowPrivate });
+    const st = await probe_(origin + "/.well-known/security.txt");
     const ok = !!(st && st.status === 200 && /^contact:/im.test(st.text));
     const expires = new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10);
     const contact = profile?.meta?.email || "security@" + host.replace(/^www\./, "");

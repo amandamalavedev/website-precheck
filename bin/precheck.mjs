@@ -19,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const lib = (f) => join(here, "..", "lib", f);
 
 const COMMANDS = {
-  report:     { file: "report.mjs",     blurb: "All seven checks in one go — Security (incl. a full security checklist), Governance, Privacy, Speed, Accessibility, Mobile, Schema — as a shareable HTML/JSON/MD report" },
+  report:     { file: "report.mjs",     blurb: "All seven checks on EVERY page of the site (follows its links, up to --max-pages, default 20; --single for one page) — Security (incl. a full security checklist), Governance, Privacy, Speed, Accessibility, Mobile, Schema — as a shareable HTML/JSON/MD report with whole-site scores and a page-by-page breakdown" },
   lighthouse: { file: "lighthouse.mjs", blurb: "Lighthouse performance (median of N runs) + LCP breakdown + failing audits" },
   a11y:       { file: "a11y.mjs",       blurb: "WCAG 2.1 AA check via axe-core (needs puppeteer-core + Chrome)" },
   headers:    { file: "headers.mjs",    blurb: "HTTP security headers: what's present, what's missing" },

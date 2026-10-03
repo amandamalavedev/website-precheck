@@ -36,7 +36,7 @@ npm install -g @amandamalavedev/precheck
 > `npm install -g github:amandamalavedev/website-precheck`.)
 
 ```bash
-precheck report     https://example.com --out ./report   # all seven checks → one shareable HTML/JSON/MD report
+precheck report     https://example.com --out ./report   # all seven checks on every page → one shareable HTML/JSON/MD report
 precheck headers    https://example.com     # security headers: present vs missing
 precheck cookies    https://example.com     # every cookie the site sets, flagged for missing Secure/SameSite
 precheck privacy    https://example.com     # third-party trackers, and whether a privacy policy is linked
@@ -58,6 +58,14 @@ and the exact fix for every problem:
   Web Vital rated against Google's thresholds) · **Accessibility** (axe-core, each failing element with
   its corrected markup or colour) · **Mobile** (phone-sized screen) · **Schema** (structured data, with a
   ready-to-paste block filled in from your page).
+
+**The whole site, not one page.** `report` follows the site's own links (and its `sitemap.xml`) and checks
+every page it finds — up to 20 by default (`--max-pages 50` for more, `--single` for just the one URL). A key
+leaked on `/about`, or a data file only one page loads, is caught the same as one on the home page. The
+report gives whole-site scores, lists each problem once with the pages it's on (the same footer link on
+every page is one fix, not eight), and adds a **Page by page** table with every page's own scores and issues.
+The leak scan reads every script in full plus the data files those scripts load, and probes the usual
+addresses for server code, `.env` files, backups, database dumps and AI-assistant notes (`CLAUDE.md`).
 
 The report detects which host serves the site (Netlify, Vercel, Cloudflare, GitHub Pages, nginx, Apache,
 Express…) and writes every header fix in that host's own format — e.g. one `_headers` file for Netlify.
