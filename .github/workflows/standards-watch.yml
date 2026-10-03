@@ -1,0 +1,37 @@
+# Once a month: re-check every standard and law the report cites, and the engines the checks run on, then
+# open an issue listing what to review or update. See scripts/standards-watch.mjs.
+name: Monthly standards watch
+
+on:
+  schedule:
+    - cron: "0 15 1 * *"   # 1st of each month, 15:00 UTC (5am Hawaii)
+  workflow_dispatch: {}      # or run it any time from the Actions tab
+
+permissions:
+  contents: write   # save this month's snapshot so next month compares against it
+  issues: write     # open the review issue
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check standards links and engine versions
+        run: node scripts/standards-watch.mjs standards-review.md
+      - name: Open the monthly review issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "Standards review — $(date -u +'%B %Y')" \
+            --body-file standards-review.md
+      - name: Save the snapshot for next month
+        run: |
+          git config user.name "standards-watch"
+          git config user.email "standards-watch@users.noreply.github.com"
+          git add .github/standards-snapshot.json
+          git diff --cached --quiet || git commit -m "Standards watch snapshot $(date -u +'%Y-%m')"
+          git push

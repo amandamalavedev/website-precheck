@@ -67,6 +67,16 @@ every page is one fix, not eight), and adds a **Page by page** table with every 
 The leak scan reads every script in full plus the data files those scripts load, and probes the usual
 addresses for server code, `.env` files, backups, database dumps and AI-assistant notes (`CLAUDE.md`).
 
+**How to read it.** Every report opens with a short *Read this first* summary (what was checked, how to read it,
+what you get, how it differs from single-page tools), then the scores. Everything else starts collapsed — click a
+heading, or *Expand all*. Each section links the published standards and laws it checks against (OWASP, MDN,
+WCAG 2.2, GDPR, CCPA…), confirmed on the date in [`lib/standards.mjs`](./lib/standards.mjs); Governance and Privacy
+also give a best-practice statement of what good looks like.
+
+**Kept current.** A [monthly GitHub Action](./.github/workflows/standards-watch.yml) re-opens every standard the
+report cites and checks for new Lighthouse/axe-core releases, then opens an issue listing what changed, broke or
+needs review ([`scripts/standards-watch.mjs`](./scripts/standards-watch.mjs); run it by hand any time).
+
 The report detects which host serves the site (Netlify, Vercel, Cloudflare, GitHub Pages, nginx, Apache,
 Express…) and writes every header fix in that host's own format — e.g. one `_headers` file for Netlify.
 

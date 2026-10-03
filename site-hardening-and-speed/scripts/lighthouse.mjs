@@ -120,6 +120,24 @@ export async function runLighthouse(rawUrl, {
   // Some audits (e.g. unused-css-rules on an inline <style> block) put source text where a URL goes —
   // only genuinely URL-shaped values count, so no code snippet is ever built against stylesheet text.
   const isUrlish = (u) => typeof u === "string" && u.length < 300 && !/[{}\n]/.test(u) && /^(https?:\/\/|\/|\.\.?\/|[\w.-]+\/[\w./-]+\.\w+$)/.test(u);
+  // The request-chain insight has no flat file list: walk its tree and keep every file the browser only
+  // found AFTER another file loaded (page → stylesheet → font) — exactly the files a preload line fixes.
+  const chainOf = (details) => {
+    const out = [];
+    const walk = (node, path) => {
+      for (const child of Object.values(node.children || {})) {
+        if (path.length >= 1 && isUrlish(child.url)) out.push({ url: child.url, foundVia: path.slice(1), endMs: Math.round(child.navStartToEndTime ?? 0) || null, bytes: child.transferSize ?? null });
+        walk(child, [...path, child.url]);
+      }
+    };
+    for (const it of details?.items || []) for (const root of Object.values(it.value?.chains || {})) walk(root, [root.url]);
+    return out.filter((c) => c.foundVia.length).sort((a, b) => (b.endMs || 0) - (a.endMs || 0)).slice(0, 8);
+  };
+  // "Preconnect candidates": origins Lighthouse says are worth connecting to early (a table when there are any)
+  const preconnectOf = (details) => {
+    const sec = (details?.items || []).find((it) => /preconnect candidates/i.test(it.title || ""));
+    return sec ? [...new Set(findItems(sec.value).map((r) => r.origin || r.url).filter((o) => typeof o === "string" && /^https?:\/\//.test(o)))].slice(0, 4) : [];
+  };
   const failing = Object.values(a)
     .filter((x) => x.score != null && x.score < 0.9 && !skipModes.has(x.scoreDisplayMode) && !metricOnlyIds.has(x.id))
     .map((x) => ({ x, saving: x.metricSavings ? Math.max(0, ...Object.values(x.metricSavings).map(Number).filter(Number.isFinite)) : 0, bytes: x.details?.overallSavingsBytes || 0 }))
@@ -128,6 +146,7 @@ export async function runLighthouse(rawUrl, {
     .map(({ x, saving, bytes }) => ({
       id: x.id, title: x.title, displayValue: x.displayValue || null,
       metricSavingMs: saving || null, bytes: bytes || null,
+      ...(x.id === "network-dependency-tree-insight" ? { chain: chainOf(x.details), preconnect: preconnectOf(x.details) } : {}),
       // Some audits (e.g. unused-css-rules on an inline <style> block) put the actual CSS/JS source
       // text in this field instead of a URL — reject anything that isn't genuinely URL-shaped so a
       // code snippet downstream never gets built against a chunk of someone's stylesheet by mistake.
