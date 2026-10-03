@@ -46,6 +46,83 @@ function nodeDetail(n) {
   return out;
 }
 
+/**
+ * axe can't judge text over an image or gradient, so it asks a human. Measure it instead: hide the text, take a
+ * screenshot of exactly what's behind it, and compute the contrast of the text colour against every background
+ * pixel. "worst" is the 5th-percentile contrast (a few stray pixels don't count); "typical" is the median.
+ * Pass = readable over (nearly) all of it; fail = unreadable over most of it; partly = unreadable over some of it.
+ */
+async function verifyContrast(page, nodes) {
+  const sels = nodes.filter((n) => Array.isArray(n.target) && n.target.length === 1 && typeof n.target[0] === "string").map((n) => ({ sel: n.target[0], html: (n.html || "").replace(/\s+/g, " ").slice(0, 160) }));
+  if (!sels.length) return [];
+  // 1. Each element's text colour, size and box, read while the page is untouched — and a screenshot WITH its text
+  const shots = [];
+  for (const { sel, html } of sels) {
+    const meta = await page.evaluate((s) => {
+      const el = document.querySelector(s);
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      // gradient-filled text (background-clip: text) has no single colour to measure — leave it to a human
+      if ([cs.backgroundClip, cs.webkitBackgroundClip].includes("text")) return null;
+      // decorative icons hidden from screen readers are outside the contrast rule
+      if (el.closest('[aria-hidden="true"]')) return null;
+      // SVG text is painted with fill, not color
+      const fg = el instanceof SVGElement ? cs.fill : cs.color;
+      if (!/^rgba?\(/.test(fg) || /rgba\([^)]*,\s*0\)$/.test(fg)) return null;
+      el.scrollIntoView({ block: "center" });
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return null;
+      return { fg, size: parseFloat(cs.fontSize), weight: parseInt(cs.fontWeight, 10) || 400, clip: { x: r.left + scrollX, y: r.top + scrollY, width: Math.min(r.width, 1200), height: Math.min(r.height, 400) } };
+    }, sel).catch(() => null);
+    if (!meta) continue;
+    try { await new Promise((r) => setTimeout(r, 50)); shots.push({ sel, html, meta, withText: await page.screenshot({ clip: meta.clip, encoding: "base64" }) }); } catch { /* skip */ }
+  }
+  if (!shots.length) return [];
+  // 2. Hide ALL text on the page and take the same shots again: what changed between the two is exactly where the
+  //    letters are, and the second shot shows what's behind them. Only those pixels are measured — an outline,
+  //    border or a neighbour's words inside the element's box no longer count as "background".
+  await page.evaluate(() => {
+    const st = document.createElement("style"); st.id = "__pc-hide-text";
+    st.textContent = "*,*::before,*::after{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important;caret-color:transparent!important;transition:none!important;animation-play-state:paused!important}svg text,svg tspan,svg textPath{fill:transparent!important;stroke:transparent!important}";
+    document.head.appendChild(st);
+  });
+  const out = [];
+  try {
+    for (const { sel, html, meta, withText } of shots) {
+      let noText;
+      try {
+        await page.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: "center" }), sel);
+        await new Promise((r) => setTimeout(r, 50));
+        noText = await page.screenshot({ clip: meta.clip, encoding: "base64" });
+      } catch { continue; }
+      const stats = await page.evaluate(async (a64, b64, fg) => {
+        const load = async (d) => { const img = new Image(); img.src = "data:image/png;base64," + d; await img.decode(); const c = document.createElement("canvas"); c.width = img.width; c.height = img.height; const g = c.getContext("2d"); g.drawImage(img, 0, 0); return g.getImageData(0, 0, c.width, c.height).data; };
+        const A = await load(a64), B = await load(b64);
+        if (A.length !== B.length) return null;
+        const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+        const lum = (r, gg, b) => 0.2126 * lin(r) + 0.7152 * lin(gg) + 0.0722 * lin(b);
+        const m = /rgba?\(([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)/.exec(fg); if (!m) return null;
+        const lf = lum(+m[1], +m[2], +m[3]);
+        const glyph = [], all = [];
+        for (let k = 0; k < B.length; k += 4) {
+          const ratio = ((lb) => (Math.max(lf, lb) + 0.05) / (Math.min(lf, lb) + 0.05))(lum(B[k], B[k + 1], B[k + 2]));
+          all.push(ratio);
+          if (Math.abs(A[k] - B[k]) + Math.abs(A[k + 1] - B[k + 1]) + Math.abs(A[k + 2] - B[k + 2]) > 40) glyph.push(ratio);
+        }
+        const use = glyph.length >= 12 ? glyph : all; // too few changed pixels (e.g. text same colour as background): fall back to the whole box
+        use.sort((x, y) => x - y);
+        return { worst: +use[Math.floor(use.length * 0.05)].toFixed(2), typical: +use[Math.floor(use.length / 2)].toFixed(2), lightText: lf > 0.4, glyphPixels: glyph.length };
+      }, withText, noText, meta.fg).catch(() => null);
+      if (!stats) continue;
+      const required = meta.size >= 24 || (meta.size >= 18.66 && meta.weight >= 700) ? 3 : 4.5;
+      out.push({ target: sel, html, fg: meta.fg, required, ...stats, status: stats.worst >= required ? "pass" : stats.typical < required ? "fail" : "partly" });
+    }
+  } finally {
+    await page.evaluate(() => document.getElementById("__pc-hide-text")?.remove()).catch(() => {});
+  }
+  return out;
+}
+
 export async function checkA11y(rawUrl, { wait = 2000, full = false, allowPrivate = false } = {}) {
   const url = await assertSafeUrl(rawUrl, { allowPrivate }); // throws on refusal
 
@@ -101,6 +178,12 @@ export async function checkA11y(rawUrl, { wait = 2000, full = false, allowPrivat
       return await window.axe.run(document, { runOnly: { type: "tag", values: runTags } });
     }, tags);
 
+    // text axe couldn't judge (over images/gradients): measured from the pixels instead of "check by eye"
+    const contrastUnsure = results.incomplete.find((r) => r.id === "color-contrast")?.nodes || [];
+    let contrastVerified = [];
+    try { contrastVerified = await verifyContrast(page, contrastUnsure.slice(0, 40)); } catch { contrastVerified = []; }
+    const verifiedTargets = new Set(contrastVerified.map((v) => v.target));
+
     const violations = results.violations.sort((a, b) => (SEV[a.impact] ?? 9) - (SEV[b.impact] ?? 9));
     const total = violations.reduce((n, x) => n + x.nodes.length, 0);
     const byImpact = violations.reduce((m, x) => ((m[x.impact] = (m[x.impact] || 0) + x.nodes.length), m), {});
@@ -114,7 +197,11 @@ export async function checkA11y(rawUrl, { wait = 2000, full = false, allowPrivat
       total, byImpact,
       passes: results.passes.length, incomplete: results.incomplete.map((r) => r.id),
       // what axe couldn't decide (e.g. text over an image) — named elements, so a human can check them
-      incompleteDetail: results.incomplete.slice(0, 5).map((r) => ({ id: r.id, help: r.help, count: r.nodes.length, nodes: r.nodes.slice(0, 4).map(nodeDetail) })),
+      incompleteDetail: results.incomplete
+        .map((r) => ({ ...r, nodes: r.id === "color-contrast" ? r.nodes.filter((n) => !verifiedTargets.has(n.target?.[0])) : r.nodes }))
+        .filter((r) => r.nodes.length).slice(0, 5)
+        .map((r) => ({ id: r.id, help: r.help, count: r.nodes.length, nodes: r.nodes.slice(0, 4).map(nodeDetail) })),
+      contrastVerified,
     };
   } finally {
     await browser.close();

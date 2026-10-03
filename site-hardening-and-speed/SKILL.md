@@ -149,6 +149,31 @@ as a skill inside their repo can do. Never fabricate a placeholder (`<file>`, `y
 real host is known) in a finding's code — if a check didn't resolve a real value, say so in prose
 rather than making the code look more finished than it is.
 
+## Guardrails when fixing from the report
+
+Getting the issue count to zero is not the goal; a better site is. Lighthouse flags things that are fine to
+leave, and some "fixes" make the site worse. When acting on a report — especially when asked to "fix everything":
+
+- **Never load a stylesheet asynchronously** (`preload` + `onload="this.rel='stylesheet'"`, `media="print"`
+  swaps). The page shows unstyled, then jumps — a layout-shift penalty far worse than the wait — and the
+  `onload` handler is inline code a strict Content-Security-Policy blocks. A small stylesheet (under ~15 KiB)
+  holding the first paint is correct; leave it.
+- **`immutable` / year-long caching only for files that never change once published** (fonts, images) — or
+  CSS/JS whose file name changes with every edit (`site.3f9a.css`, or a `?v=` you bump). Never put plain
+  `site.css` / `app.js` under `immutable`: returning visitors would keep the old version for a year.
+- **Fix layout shifts only by reserving space** (`width`/`height` or `aspect-ratio`, `min-height` for late
+  content) **or by animating `transform`/`opacity`** — never by removing content or delaying the page.
+- **Images: never make a copy wider than the original, and never lower the quality the site was built with.**
+  Add smaller copies to `srcset` for phones and keep the original as the largest choice (print and sharp
+  screens use it). Check that a format "upgrade" is actually smaller — an already well-compressed JPEG often
+  gets *bigger* as WebP.
+- **Leave items the report marks Low on a page that already scores 90+** unless the user asks — they're polish.
+- **Leave decorative and data-visualisation elements alone** (map labels, chart text, icons) when the page offers
+  an accessible alternative (a list, a dropdown) — enlarging them usually breaks the design they belong to.
+- **Re-run the report after fixing and compare every score.** If any score went down, or any image or page
+  changed size unexpectedly, undo that change. Compare live vs fixed in a real browser (same viewport) before
+  pushing anything that touches images, fonts or layout.
+
 ## When you finish
 
 Give the user: what changed and was verified (say how — "re-tested live, forged header now blocked"),
