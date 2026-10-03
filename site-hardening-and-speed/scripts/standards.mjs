@@ -37,6 +37,16 @@ export const STANDARDS = {
     { name: "axe-core rule descriptions (Deque)", url: "https://dequeuniversity.com/rules/axe/", covers: "each automated rule and how to fix it" },
     { name: "US DOJ — ADA guidance on web accessibility", url: "https://www.ada.gov/resources/web-guidance/", covers: "why US sites are expected to be accessible" },
   ],
+  Basics: [
+    { name: "MDN — 404 Not Found", url: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/404", covers: "what a missing page should return" },
+    { name: "Google Search Central — soft 404 errors", url: "https://developers.google.com/search/docs/crawling-indexing/http-network-errors", covers: "why a \"not found\" page must not return 200" },
+    { name: "The Open Graph protocol", url: "https://ogp.me/", covers: "the preview card shown when a link is shared" },
+    { name: "MDN — <link> (icons)", url: "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/link", covers: "declaring a favicon" },
+    { name: "W3C — Developing an Accessibility Statement", url: "https://www.w3.org/WAI/planning/statements/", covers: "what an accessibility statement should say" },
+    { name: "US Copyright Office — Copyright Notice (Circular 3)", url: "https://www.copyright.gov/circs/circ03.pdf", covers: "the form of a copyright notice" },
+    { name: "FTC — Protecting Personal Information", url: "https://www.ftc.gov/business-guidance/resources/protecting-personal-information-guide-business", covers: "handling what visitors submit in forms" },
+    { name: "Let's Encrypt FAQ", url: "https://letsencrypt.org/docs/faq/", covers: "certificate lifetimes and renewal" },
+  ],
   Mobile: [
     { name: "WCAG 2.2 — Target Size (Minimum) 2.5.8", url: "https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html", covers: "the 24×24px tap-target rule" },
     { name: "MDN — Viewport meta tag", url: "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/meta/name/viewport", covers: "the mobile viewport tag and pinch-zoom" },
