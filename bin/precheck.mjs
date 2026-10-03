@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // precheck CLI — free website checks any project can run, no AI model required.
-//   precheck report     <url> [--out dir] [--brand-name ...]   — six checks on every page, one HTML/JSON/MD report
+//   precheck report     <url> [--out dir] [--brand-name ...]   — seven checks on every page, one HTML/JSON/MD report
 //   precheck lighthouse <url> [--runs 3] [--form mobile|desktop]
 //   precheck a11y       <url> [--wait 2000] [--full]
 //   precheck headers    <url>
@@ -19,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const lib = (f) => join(here, "..", "lib", f);
 
 const COMMANDS = {
-  report:     { file: "report.mjs",     blurb: "Six checks on EVERY page of the site (follows its links, up to --max-pages, default 20; --single for one page) — Security (incl. a full security checklist), Governance, Privacy, Speed, Accessibility, Mobile (add --with-schema for structured data) — as a shareable HTML/JSON/MD report with whole-site scores and a page-by-page breakdown" },
+  report:     { file: "report.mjs",     blurb: "Seven checks on EVERY page of the site (follows its links, up to --max-pages, default 20; --single for one page) — Security (incl. a full security checklist), Governance, Privacy, Speed, Accessibility, Mobile, Site basics (add --with-schema for structured data) — as a shareable HTML/JSON/MD report with whole-site scores and a page-by-page breakdown" },
   lighthouse: { file: "lighthouse.mjs", blurb: "Lighthouse performance (median of N runs) + LCP breakdown + failing audits" },
   a11y:       { file: "a11y.mjs",       blurb: "WCAG 2.1 AA check via axe-core (needs puppeteer-core + Chrome)" },
   headers:    { file: "headers.mjs",    blurb: "HTTP security headers: what's present, what's missing" },
