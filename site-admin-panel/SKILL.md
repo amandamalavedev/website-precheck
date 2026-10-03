@@ -37,6 +37,12 @@ jobs the site needs — a brochure site may want content + media + analytics and
    they come from their source of truth.
 2. **Upload & replace pictures/media.** Fixed named "slots" on the page; upload re-encodes to WebP,
    strips EXIF/GPS, caps dimensions, replaces the old file. The owner never touches a filename.
+   Also write a **phone-size copy** (≈720px wide, never upscaled) and list both in the `<img>`'s
+   `srcset`/`sizes` — and in its `<link rel=preload>` (`imagesrcset`/`imagesizes`), or the phone fetches
+   the big file anyway. Store the real widths with the photo; delete the copy with its photo; give photos
+   already stored their copy at boot. Do this on the server: a resize in the browser can be skipped by
+   any uploader, and an audit suggesting "add client-side canvas resizing" is usually unaware the server
+   already does it — check the pipeline first.
 3. **See analytics.** A read-only view of the site's own visit data (see the companion
    `analytics-and-search-console` skill for the privacy-respecting collection side).
 4. **Manage users.** Add/deactivate officers, reset passcodes, revoke sessions, a panic "sign

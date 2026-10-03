@@ -174,6 +174,38 @@ leave, and some "fixes" make the site worse. When acting on a report — especia
   changed size unexpectedly, undo that change. Compare live vs fixed in a real browser (same viewport) before
   pushing anything that touches images, fonts or layout.
 
+## Lessons from real audits (misses that are now rules)
+
+Each of these was missed once on a real site — check for them every time:
+
+- **Check every page, not just the one URL.** A key in a data file loaded only by `/team` is a site leak.
+  `report` crawls by default; on a single-page site (sections reached by `#links`) say so — the sections are
+  part of `/`, and gated areas are seen as an outsider sees them (the login page), which is the right view.
+- **Read scripts and the data files they load in full.** A 20 KB read cap once hid everything past the start
+  of a bundle. Resolve a script's relative `fetch("data/x.json")` against the **page**, not the script file.
+- **Probe beyond `.git`/`.env`:** `.env.local`/`.production`/`.bak`, `backup.zip`, `*.sql` dumps,
+  `package.json`, `CLAUDE.md`/`.claude/`/`.cursorrules`, `Dockerfile`, `docker-compose.yml`, `server.js` in the
+  publish folder. On Netlify the fix is a `_redirects` line per file: `/server.js  /404  404!`.
+- **A ✗ in a checklist must cost points and come with a fix** — a missing privacy-policy link once showed ✗
+  while Privacy still scored 100.
+- **"Check by eye" is not an answer.** Measure text over images/gradients from the pixels behind the letters
+  (`report` does this); only gradient-filled text truly needs a human.
+- **A Lighthouse score of "0" with no metrics is a failed run** (e.g. `NO_NAVSTART`), not a slow page — retry,
+  then report "couldn't measure", never 0.
+- **Re-measure before trusting a pasted number.** A pasted CLS of 0.223 measured 0.000 in a real browser —
+  stale reports and transient lab runs are common. Measure layout shift with a `PerformanceObserver` on a
+  throttled phone profile before "fixing" it.
+- **Lighthouse element snippets show lazy images as `src=""`** — that is the snippet, not a broken image.
+  Load the page and check the real `<img>` before calling it a bug.
+- **Generated output vs its source.** Before editing a page, find out whether it's generated (a build script,
+  a template + content store rebuilt at boot or on save). Edit the source; don't regenerate from a local copy
+  of data that production has newer edits to.
+- **Minified copies must never go stale.** Stamp the minified file with a fingerprint of its source and serve
+  it only while the fingerprint matches — an edit without re-minifying then falls back to the source.
+- **Test the whole thing locally against live before pushing** anything touching images, scripts or layout:
+  same viewports (390@2–3x, 412@1.75x, 1280@1x), compare every image's displayed size, the page height,
+  console errors, and the interactive parts (forms, maps, calculators). Stop local servers by their exact PID.
+
 ## When you finish
 
 Give the user: what changed and was verified (say how — "re-tested live, forged header now blocked"),
