@@ -533,3 +533,12 @@ test("F15: the same footer element on every page is listed once, with its pages;
   assert.deepEqual(merged[0].elements.find((e) => e.target === "footer a.privacy").pages, ["/", "/about"]);
   assert.match(merged[0].plain, /^2 buttons\/links/);
 });
+
+// ── F16: install commands written on a page are found, so unowned npm names can be flagged ───────────
+test("F16: install commands on a page are extracted; repo/URL installs are skipped", async () => {
+  const { installCommandsIn } = await import("../lib/specifics.mjs");
+  assert.deepEqual(installCommandsIn(`<code>npx precheck</code><script>var c='npx precheck report x'</script>`), ["precheck"]);
+  assert.deepEqual(installCommandsIn(`$ npm install -g github:someone/some-repo<br>$ precheck report x`), []);
+  assert.deepEqual(installCommandsIn(`npx -y lighthouse@12 url · npm i -D eslint@9 · yarn global add serve · pnpm dlx create-vite · npx @squoosh/cli`),
+    ["lighthouse", "eslint", "serve", "create-vite", "@squoosh/cli"]);
+});

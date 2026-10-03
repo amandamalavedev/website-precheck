@@ -186,6 +186,9 @@ Each of these was missed once on a real site — check for them every time:
 - **Probe beyond `.git`/`.env`:** `.env.local`/`.production`/`.bak`, `backup.zip`, `*.sql` dumps,
   `package.json`, `CLAUDE.md`/`.claude/`/`.cursorrules`, `Dockerfile`, `docker-compose.yml`, `server.js` in the
   publish folder. On Netlify the fix is a `_redirects` line per file: `/server.js  /404  404!`.
+- **Read the instructions on the page, not just its code.** A page told visitors to run `npx precheck` — an npm
+  name nobody owned, so anyone could publish code under it. Install commands in page text and scripts are now
+  checked against the npm registry; recommend scoped names (`@you/tool`) or `npm install -g github:you/repo`.
 - **A ✗ in a checklist must cost points and come with a fix** — a missing privacy-policy link once showed ✗
   while Privacy still scored 100.
 - **"Check by eye" is not an answer.** Measure text over images/gradients from the pixels behind the letters
