@@ -36,7 +36,7 @@ npm install -g @amandamalavedev/precheck
 > `npm install -g github:amandamalavedev/website-precheck`.)
 
 ```bash
-precheck report     https://example.com --out ./report   # all seven checks on every page → one shareable HTML/JSON/MD report
+precheck report     https://example.com --out ./report   # six checks on every page → one shareable HTML/JSON/MD report
 precheck headers    https://example.com     # security headers: present vs missing
 precheck cookies    https://example.com     # every cookie the site sets, flagged for missing Secure/SameSite
 precheck privacy    https://example.com     # third-party trackers, and whether a privacy policy is linked
@@ -48,7 +48,7 @@ precheck media      https://example.com     # local <video> files over a size th
 precheck sitemap --dir ./build --base https://example.com   # generate sitemap.xml + robots.txt + llms.txt
 ```
 
-The seven checks in `report`, each with its own score, an explanation of how that score is calculated,
+The six checks in `report` (Schema only with `--with-schema`), each with its own score, an explanation of how that score is calculated,
 and the exact fix for every problem:
 
 - **Security** — a 20-point checklist: HTTPS, security headers, a Content-Security-Policy built from what
@@ -56,7 +56,7 @@ and the exact fix for every problem:
   API keys/passwords/emails inside your site's scripts, downloadable server files, `security.txt`.
 - **Governance** (cookies) · **Privacy** (third-party trackers) · **Speed** (Lighthouse, with every Core
   Web Vital rated against Google's thresholds) · **Accessibility** (axe-core, each failing element with
-  its corrected markup or colour) · **Mobile** (phone-sized screen) · **Schema** (structured data, with a
+  its corrected markup or colour) · **Mobile** (phone-sized screen) · and, with `--with-schema`, **Schema** (structured data, with a
   ready-to-paste block filled in from your page).
 
 **The whole site, not one page.** `report` follows the site's own links (and its `sitemap.xml`) and checks

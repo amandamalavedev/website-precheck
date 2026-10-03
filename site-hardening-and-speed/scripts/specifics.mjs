@@ -467,7 +467,7 @@ export async function securityChecklist({ url, headers, cookies, privacy, profil
     // API keys, tokens and passwords in code every visitor downloads. Masked in the report — never printed in full.
     const SECRET = [
       ["Anthropic API key", /sk-ant-[A-Za-z0-9_-]{20,}/g, "fail"],
-      ["OpenAI API key", /sk-(?:proj-)?[A-Za-z0-9_-]{32,}/g, "fail"],
+      ["OpenAI API key", /sk-(?!ant-)(?:proj-)?[A-Za-z0-9_-]{32,}/g, "fail"],
       ["Stripe secret key", /[sr]k_live_[0-9a-zA-Z]{20,}/g, "fail"],
       ["AWS access key", /\bAKIA[0-9A-Z]{16}\b/g, "fail"],
       ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g, "fail"],
