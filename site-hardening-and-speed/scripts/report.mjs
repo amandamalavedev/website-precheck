@@ -42,6 +42,7 @@ const CHECK_PROBLEM = {
   "source-maps": "Your original source code can be downloaded (source maps)", "secrets-in-code": "API keys, tokens or passwords are visible in your site's code",
   "emails-in-code": "Staff email addresses are visible in your site's scripts", "server-files": "Server code or config files can be downloaded",
   "security-txt": "No security contact published (security.txt)",
+  "privacy-link": "Some pages have no link to your privacy policy",
 };
 const CATEGORY_RANK = { Security: 0, Privacy: 1, Governance: 2, Accessibility: 3, Mobile: 4, Speed: 5, Schema: 6 };
 /** Order findings for "Fix this first": severity, then category, then how much of the page it affects. */
@@ -352,12 +353,15 @@ function generateCode(f, siteUrl) {
 // ---- Steps shared by the one-page run and the whole-site merge ----
 const SEV_WEIGHT = { high: 25, medium: 10, low: 4 };
 
-/** Failed/warned SECURITY checklist items → Security findings (one source for score, ✓/✗ list and fixes). */
+/** Failed/warned checklist items → findings (one source for score, ✓/✗ list and fixes). Security items, plus
+ *  the privacy-policy link — the one Privacy item with no finding of its own (cookies and trackers already
+ *  have theirs); without it a ✗ showed in the list while Privacy still scored 100 (found 2026-10-02). */
+const PRIVACY_IMPACT = { "privacy-link": "Visitors on this page have no way to find out what the site does with their data. Privacy laws (GDPR, CCPA) and US regulators expect the policy to be reachable from every page — a footer link is standard." };
 function securityFindingsFrom(checklist) {
-  return checklist.items.filter((i) => i.section === "Security" && i.status !== "pass").map((i) => ({
+  return checklist.items.filter((i) => (i.section === "Security" || i.id === "privacy-link") && i.status !== "pass").map((i) => ({
     severity: i.status === "fail" ? (CRITICAL_CHECKS.has(i.id) ? "high" : "medium") : "low",
-    category: "Security", key: `check:${i.id}`, title: CHECK_PROBLEM[i.id] || i.label, label: i.label,
-    plain: CHECK_PROBLEM[i.id] || i.label, impact: i.detail, fixPlain: i.where || "", why: i.detail, fix: i.where || "",
+    category: i.section === "Security" ? "Security" : "Privacy", key: `check:${i.id}`, title: CHECK_PROBLEM[i.id] || i.label, label: i.label,
+    plain: CHECK_PROBLEM[i.id] || i.label, impact: PRIVACY_IMPACT[i.id] ? `${PRIVACY_IMPACT[i.id]} (${i.detail})` : i.detail, fixPlain: i.where || "", why: i.detail, fix: i.where || "",
     where: i.where || null, code: i.code ?? null, checkStatus: i.status, ...(i.pages ? { pages: i.pages } : {}),
   }));
 }
@@ -758,7 +762,7 @@ export function mergeChecklists(list) {
 export function mergeFindings(perPage) {
   const groups = new Map();
   for (const { path, findings } of perPage) for (const f of findings) {
-    if (f.category === "Security" && String(f.key || "").startsWith("check:")) continue;
+    if (String(f.key || "").startsWith("check:")) continue; // rebuilt from the merged checklist
     const k = f.key || `${f.category}|${f.plain}`;
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push({ f, path });
